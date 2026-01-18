@@ -158,6 +158,7 @@
 
               flakePath = mkOption {
                 type = types.path;
+                default = /etc/nixos;
                 description = "Path to the NixOS flake configuration";
               };
 
@@ -165,12 +166,6 @@
                 type = types.int;
                 default = 60;
                 description = "How often to check for updates (in minutes)";
-              };
-
-              terminal = mkOption {
-                type = types.str;
-                default = "ghostty";
-                description = "Terminal emulator to use for running updates";
               };
             };
 
@@ -181,7 +176,6 @@
               environment.etc."xdg/nixos-update-checker/config.toml".text = ''
                 flake_path = "${cfg.flakePath}"
                 check_interval_minutes = ${toString cfg.checkIntervalMinutes}
-                terminal = "${cfg.terminal}"
               '';
             };
           };

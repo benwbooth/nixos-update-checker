@@ -1,7 +1,6 @@
 mod config;
 mod flake_checker;
 mod tray;
-mod update_runner;
 
 use cxx_qt_lib::{QQmlApplicationEngine, QUrl};
 use cxx_qt_lib_extras::QApplication;

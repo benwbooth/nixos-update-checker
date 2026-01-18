@@ -19,15 +19,13 @@ pub enum ConfigError {
 pub struct Config {
     pub flake_path: String,
     pub check_interval_minutes: u32,
-    pub terminal: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            flake_path: String::new(),
+            flake_path: "/etc/nixos".to_string(),
             check_interval_minutes: 60,
-            terminal: "ghostty".to_string(),
         }
     }
 }
@@ -69,9 +67,7 @@ impl Config {
 
     /// Check if the config is valid (has required fields set)
     pub fn is_valid(&self) -> bool {
-        !self.flake_path.is_empty()
-            && self.check_interval_minutes > 0
-            && !self.terminal.is_empty()
+        !self.flake_path.is_empty() && self.check_interval_minutes > 0
     }
 
     /// Get the flake path as a PathBuf
@@ -88,8 +84,7 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.check_interval_minutes, 60);
-        assert_eq!(config.terminal, "ghostty");
-        assert!(config.flake_path.is_empty());
+        assert_eq!(config.flake_path, "/etc/nixos");
     }
 
     #[test]
@@ -97,7 +92,6 @@ mod tests {
         let config = Config {
             flake_path: "/home/user/nixos".to_string(),
             check_interval_minutes: 30,
-            terminal: "konsole".to_string(),
         };
 
         let toml_str = toml::to_string(&config).unwrap();
@@ -105,6 +99,5 @@ mod tests {
 
         assert_eq!(parsed.flake_path, config.flake_path);
         assert_eq!(parsed.check_interval_minutes, config.check_interval_minutes);
-        assert_eq!(parsed.terminal, config.terminal);
     }
 }

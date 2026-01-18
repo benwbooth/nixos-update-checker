@@ -8,10 +8,12 @@ import NixosUpdateChecker
 ApplicationWindow {
     id: root
     visible: false  // Start hidden - show via tray menu
-    width: 450
-    height: 350
-    title: "NixOS Update Checker - Settings"
+    width: 500
+    height: outputExpanded ? 550 : 350
+    title: "NixOS Update Checker"
     flags: Qt.Dialog | Qt.WindowStaysOnTopHint
+
+    property bool outputExpanded: false
 
     // The Rust backend
     UpdateChecker {
@@ -31,7 +33,6 @@ ApplicationWindow {
         onConfig_loaded: {
             flakePathField.text = checker.flake_path
             intervalSpinBox.value = checker.check_interval
-            terminalField.text = checker.terminal
             // Start periodic checking
             checkTimer.interval = checker.check_interval * 60 * 1000
             checkTimer.start()
@@ -39,6 +40,16 @@ ApplicationWindow {
 
         onConfig_saved: {
             checkTimer.interval = checker.check_interval * 60 * 1000
+        }
+
+        onOutput_changed: {
+            // Auto-scroll to bottom
+            outputArea.cursorPosition = outputArea.text.length
+        }
+
+        onUpdate_completed: {
+            // Expand output panel to show results
+            outputExpanded = true
         }
     }
 
@@ -68,14 +79,10 @@ ApplicationWindow {
 
         onActivated: function(reason) {
             if (reason === Platform.SystemTrayIcon.Trigger) {
-                // Left click - run update if updates available, otherwise check
-                if (checker.has_updates) {
-                    checker.run_update()
-                } else {
-                    checker.check_now()
-                }
-            } else if (reason === Platform.SystemTrayIcon.Context) {
-                // Right click - show menu (handled automatically)
+                // Left click - show window
+                root.show()
+                root.raise()
+                root.requestActivate()
             }
         }
 
@@ -84,8 +91,11 @@ ApplicationWindow {
                 text: checker.has_updates
                     ? qsTr("Run Update (%1 available)").arg(checker.update_count)
                     : qsTr("No updates available")
-                enabled: checker.has_updates
-                onTriggered: checker.run_update()
+                enabled: checker.has_updates && !checker.update_running
+                onTriggered: {
+                    root.show()
+                    checker.run_update()
+                }
             }
 
             Platform.MenuSeparator {}
@@ -98,7 +108,11 @@ ApplicationWindow {
 
             Platform.MenuItem {
                 text: qsTr("Settings...")
-                onTriggered: root.show()
+                onTriggered: {
+                    root.show()
+                    root.raise()
+                    root.requestActivate()
+                }
             }
 
             Platform.MenuSeparator {}
@@ -110,19 +124,20 @@ ApplicationWindow {
         }
     }
 
-    // Settings dialog content
+    // Main content
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 20
         spacing: 15
 
         Label {
-            text: "NixOS Update Checker Settings"
+            text: "NixOS Update Checker"
             font.pixelSize: 18
             font.bold: true
             Layout.alignment: Qt.AlignHCenter
         }
 
+        // Settings
         GridLayout {
             columns: 2
             rowSpacing: 10
@@ -133,7 +148,7 @@ ApplicationWindow {
             TextField {
                 id: flakePathField
                 Layout.fillWidth: true
-                placeholderText: "/path/to/your/nixos-config"
+                placeholderText: "/etc/nixos"
             }
 
             Label { text: "Check Interval (minutes):" }
@@ -143,13 +158,6 @@ ApplicationWindow {
                 to: 1440
                 value: 60
                 editable: true
-            }
-
-            Label { text: "Terminal:" }
-            TextField {
-                id: terminalField
-                Layout.fillWidth: true
-                placeholderText: "ghostty"
             }
         }
 
@@ -181,6 +189,58 @@ ApplicationWindow {
             }
         }
 
+        // Output panel with status line
+        GroupBox {
+            title: "Update Output"
+            Layout.fillWidth: true
+            Layout.fillHeight: outputExpanded
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 5
+
+                // Status line (always visible)
+                RowLayout {
+                    Layout.fillWidth: true
+
+                    Label {
+                        text: checker.update_status_line || "No output"
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                        font.family: "monospace"
+                        color: checker.update_running ? "#2196F3" : palette.text
+                    }
+
+                    Button {
+                        text: outputExpanded ? "▼ Collapse" : "▶ Expand"
+                        flat: true
+                        onClicked: outputExpanded = !outputExpanded
+                    }
+                }
+
+                // Expandable output area
+                ScrollView {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    visible: outputExpanded
+
+                    TextArea {
+                        id: outputArea
+                        text: checker.update_output
+                        readOnly: true
+                        font.family: "monospace"
+                        font.pixelSize: 11
+                        wrapMode: TextArea.Wrap
+                        background: Rectangle {
+                            color: palette.base
+                            border.color: palette.mid
+                            border.width: 1
+                        }
+                    }
+                }
+            }
+        }
+
         // Buttons
         RowLayout {
             Layout.fillWidth: true
@@ -192,12 +252,17 @@ ApplicationWindow {
                 onClicked: {
                     // Save first if changed
                     if (flakePathField.text !== checker.flake_path ||
-                        intervalSpinBox.value !== checker.check_interval ||
-                        terminalField.text !== checker.terminal) {
-                        checker.save_config(flakePathField.text, intervalSpinBox.value, terminalField.text)
+                        intervalSpinBox.value !== checker.check_interval) {
+                        checker.save_config(flakePathField.text, intervalSpinBox.value)
                     }
                     checker.check_now()
                 }
+            }
+
+            Button {
+                text: checker.update_running ? "Updating..." : "Run Update"
+                enabled: checker.has_updates && !checker.update_running
+                onClicked: checker.run_update()
             }
 
             Item { Layout.fillWidth: true }
@@ -205,7 +270,7 @@ ApplicationWindow {
             Button {
                 text: "Save"
                 onClicked: {
-                    checker.save_config(flakePathField.text, intervalSpinBox.value, terminalField.text)
+                    checker.save_config(flakePathField.text, intervalSpinBox.value)
                 }
             }
 
