@@ -1,0 +1,23 @@
+[package]
+name = "nixos-update-checker"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ben"]
+description = "A system tray application that monitors a NixOS flake repository for updates"
+license = "MIT"
+
+[dependencies]
+cxx = "1.0"
+cxx-qt = "0.7"
+cxx-qt-lib = { version = "0.7", features = ["qt_full"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+dirs = "5.0"
+tokio = { version = "1.0", features = ["rt-multi-thread", "process", "time", "sync", "macros"] }
+regex = "1.10"
+thiserror = "2.0"
+chrono = "0.4"
+serde_json = "1.0"
+
+[build-dependencies]
+cxx-qt-build = "0.7"
