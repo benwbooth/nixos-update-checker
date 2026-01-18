@@ -36,6 +36,7 @@
           qt6.qtdeclarative
           qt6.qtwayland
           qt6.qtsvg  # for SVG icon support
+          qt6.qttools  # for Qt.labs.platform
           libGL
         ];
 
@@ -56,6 +57,7 @@
             pkgs.qt6.qtdeclarative
             pkgs.qt6.qtsvg
             pkgs.qt6.qtwayland
+            pkgs.qt6.qttools
           ];
         };
 

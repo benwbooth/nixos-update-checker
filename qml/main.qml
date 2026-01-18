@@ -7,7 +7,7 @@ import NixosUpdateChecker
 
 ApplicationWindow {
     id: root
-    visible: false
+    visible: false  // Start hidden - show via tray menu
     width: 450
     height: 350
     title: "NixOS Update Checker - Settings"
@@ -25,7 +25,7 @@ ApplicationWindow {
 
         onUpdates_changed: {
             trayIcon.icon.source = checker.get_icon_path()
-            trayIcon.toolTip = checker.tooltip_text
+            trayIcon.tooltip = checker.tooltip_text
         }
 
         onConfig_loaded: {
@@ -64,7 +64,7 @@ ApplicationWindow {
         id: trayIcon
         visible: true
         icon.source: "qrc:/icons/nix-flake.svg"
-        toolTip: "NixOS Update Checker"
+        tooltip: "NixOS Update Checker"
 
         onActivated: function(reason) {
             if (reason === Platform.SystemTrayIcon.Trigger) {
@@ -168,7 +168,7 @@ ApplicationWindow {
 
                 Label {
                     text: checker.status_message || "Ready"
-                    color: checker.status_message.startsWith("Error") ? "red" : "inherit"
+                    color: checker.status_message && checker.status_message.startsWith("Error") ? "red" : palette.text
                 }
 
                 Label {
@@ -176,7 +176,7 @@ ApplicationWindow {
                         ? checker.update_count + " update(s) available"
                         : "No updates available"
                     font.bold: checker.has_updates
-                    color: checker.has_updates ? "#2196F3" : "inherit"
+                    color: checker.has_updates ? "#2196F3" : palette.text
                 }
             }
         }
