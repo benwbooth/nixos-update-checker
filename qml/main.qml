@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import QtQuick.Window
 import Qt.labs.platform as Platform
 import NixosUpdateChecker
+import Terminal 1.0
 
 ApplicationWindow {
     id: root
@@ -77,16 +78,6 @@ ApplicationWindow {
             }
             checkTimer.interval = minutes * 60 * 1000
         }
-
-        onOutput_changed: {
-            // Auto-scroll to bottom
-            outputArea.cursorPosition = outputArea.text.length
-        }
-
-        onUpdate_completed: {
-            // Expand output panel to show results
-            outputExpanded = true
-        }
     }
 
     // Timer for initial check
@@ -115,14 +106,6 @@ ApplicationWindow {
         onTriggered: checker.poll_check_result()
     }
 
-    // Timer to poll for update progress (async update)
-    Timer {
-        id: updatePollTimer
-        interval: 100
-        repeat: true
-        running: checker.update_running
-        onTriggered: checker.poll_update_result()
-    }
 
     // Folder dialog for flake path selection
     Platform.FolderDialog {
@@ -158,10 +141,15 @@ ApplicationWindow {
                 text: checker.has_updates
                     ? qsTr("Run Update (%1 available)").arg(checker.update_count)
                     : qsTr("No updates available")
-                enabled: checker.has_updates && !checker.update_running
+                enabled: checker.has_updates && !terminal.running
                 onTriggered: {
                     root.show()
-                    checker.run_update()
+                    var scriptPath = checker.get_update_script_path()
+                    if (scriptPath) {
+                        outputExpanded = true
+                        terminal.clear()
+                        terminal.runScript(scriptPath)
+                    }
                 }
             }
 
@@ -331,7 +319,7 @@ ApplicationWindow {
             }
         }
 
-        // Output panel with status line
+        // Output panel with embedded terminal
         GroupBox {
             title: "Update Output"
             Layout.fillWidth: true
@@ -354,34 +342,51 @@ ApplicationWindow {
                     }
 
                     Label {
-                        text: checker.update_status_line || ""
+                        text: terminal.running ? "Running update..." : (checker.update_status_line || "")
                         elide: Text.ElideRight
                         Layout.fillWidth: true
                         font.family: "monospace"
-                        color: checker.update_running ? "#2196F3" : palette.text
+                        color: terminal.running ? "#2196F3" : palette.text
                     }
                 }
 
-                // Expandable output area
-                ScrollView {
+                // Embedded terminal using WindowContainer
+                WindowContainer {
+                    id: terminalContainer
+                    window: terminal.window
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    Layout.minimumHeight: 400
                     visible: outputExpanded
 
-                    TextArea {
-                        id: outputArea
-                        text: checker.update_output
-                        readOnly: true
-                        font.family: "monospace"
-                        font.pixelSize: 11
-                        wrapMode: TextArea.Wrap
-                        background: Rectangle {
-                            color: palette.base
-                            border.color: palette.mid
-                            border.width: 1
-                        }
+                    // Dark background for terminal area
+                    Rectangle {
+                        anchors.fill: parent
+                        color: "#1e1e1e"
+                        z: -1
                     }
                 }
+            }
+        }
+
+        // Terminal widget instance
+        TerminalWidget {
+            id: terminal
+
+            onFinished: function(exitCode) {
+                checker.set_update_running(false)
+                checker.set_update_status_line(exitCode === 0 ? "Update completed successfully" : "Update failed with exit code " + exitCode)
+                // Clear updates since we just applied them
+                if (exitCode === 0) {
+                    checker.set_has_updates(false)
+                    checker.set_update_count(0)
+                    checker.set_updates_json("[]")
+                }
+                checker.update_completed()
+            }
+
+            onRunningChanged: {
+                checker.set_update_running(terminal.running)
             }
         }
 
@@ -397,9 +402,17 @@ ApplicationWindow {
             }
 
             Button {
-                text: checker.update_running ? "Updating..." : "Run Update"
-                enabled: checker.has_updates && !checker.update_running
-                onClicked: checker.run_update()
+                text: terminal.running ? "Updating..." : "Run Update"
+                enabled: checker.has_updates && !terminal.running
+                onClicked: {
+                    // Get the script path from checker and run in terminal
+                    var scriptPath = checker.get_update_script_path()
+                    if (scriptPath) {
+                        outputExpanded = true
+                        terminal.clear()
+                        terminal.runScript(scriptPath)
+                    }
+                }
             }
 
             Item { Layout.fillWidth: true }

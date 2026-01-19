@@ -8,6 +8,11 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 
+// Link to the C++ terminal widget registration function
+extern "C" {
+    fn register_terminal_type();
+}
+
 /// Get the path to the lock file
 fn get_lock_file_path() -> PathBuf {
     directories::ProjectDirs::from("", "", "nixos-update-checker")
@@ -66,6 +71,12 @@ fn main() {
 
     // Initialize Qt application (QApplication is required for Qt.labs.platform.SystemTrayIcon)
     let mut app = QApplication::new();
+
+    // Register the terminal widget type with QML before creating the engine
+    unsafe {
+        register_terminal_type();
+    }
+
     let mut engine = QQmlApplicationEngine::new();
 
     // Load the QML UI

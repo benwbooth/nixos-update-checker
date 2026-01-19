@@ -37,13 +37,10 @@ pub mod qobject {
         #[qinvokable]
         fn poll_check_result(self: Pin<&mut UpdateChecker>);
 
-        /// Run the actual update (async - spawns background thread)
+        /// Get the path to the update script (generates it if needed)
+        /// Returns the script path that can be run in the embedded terminal
         #[qinvokable]
-        fn run_update(self: Pin<&mut UpdateChecker>);
-
-        /// Poll for update progress (called by QML timer)
-        #[qinvokable]
-        fn poll_update_result(self: Pin<&mut UpdateChecker>);
+        fn get_update_script_path(self: Pin<&mut UpdateChecker>) -> QString;
 
         /// Save configuration
         #[qinvokable]
@@ -100,8 +97,6 @@ pub mod qobject {
 use core::pin::Pin;
 use cxx_qt_lib::QString;
 use std::sync::{Arc, Mutex};
-use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
 
 use crate::config::{Config, IntervalUnit};
 use crate::flake_checker::{self, FlakeUpdate};
@@ -136,103 +131,6 @@ fn updates_to_json(updates: &[FlakeUpdate]) -> String {
 /// Deserialize updates from JSON string
 fn updates_from_json(json: &str) -> Vec<FlakeUpdate> {
     serde_json::from_str(json).unwrap_or_default()
-}
-
-/// Convert ANSI escape codes to HTML for display in QML rich text
-fn ansi_to_html(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() * 2);
-    result.push_str("<pre style=\"font-family: monospace; white-space: pre-wrap;\">");
-
-    let mut chars = s.chars().peekable();
-    let mut current_color: Option<&str> = None;
-    let mut is_bold = false;
-
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                chars.next(); // consume '['
-                // Parse the escape sequence
-                let mut code = String::new();
-                while let Some(&next) = chars.peek() {
-                    if next.is_ascii_alphabetic() {
-                        chars.next(); // consume the letter
-                        break;
-                    }
-                    code.push(chars.next().unwrap());
-                }
-
-                // Close previous span if needed
-                if current_color.is_some() || is_bold {
-                    result.push_str("</span>");
-                }
-
-                // Parse color codes
-                let (new_color, new_bold) = parse_ansi_code(&code);
-                current_color = new_color;
-                is_bold = new_bold || is_bold && new_color.is_none();
-
-                // Open new span if needed
-                if current_color.is_some() || is_bold {
-                    result.push_str("<span style=\"");
-                    if let Some(color) = current_color {
-                        result.push_str("color: ");
-                        result.push_str(color);
-                        result.push_str("; ");
-                    }
-                    if is_bold {
-                        result.push_str("font-weight: bold; ");
-                    }
-                    result.push_str("\">");
-                }
-            }
-        } else if c == '<' {
-            result.push_str("&lt;");
-        } else if c == '>' {
-            result.push_str("&gt;");
-        } else if c == '&' {
-            result.push_str("&amp;");
-        } else if c == '\n' {
-            result.push_str("<br/>");
-        } else {
-            result.push(c);
-        }
-    }
-
-    if current_color.is_some() || is_bold {
-        result.push_str("</span>");
-    }
-    result.push_str("</pre>");
-    result
-}
-
-/// Parse ANSI code and return (color, is_bold)
-fn parse_ansi_code(code: &str) -> (Option<&'static str>, bool) {
-    let mut color = None;
-    let mut bold = false;
-
-    for part in code.split(';') {
-        match part {
-            "0" => { color = None; bold = false; } // Reset
-            "1" => bold = true,
-            "30" => color = Some("#000000"), // Black
-            "31" => color = Some("#cc0000"), // Red
-            "32" => color = Some("#00cc00"), // Green
-            "33" => color = Some("#cccc00"), // Yellow
-            "34" => color = Some("#0066cc"), // Blue
-            "35" => color = Some("#cc00cc"), // Magenta
-            "36" => color = Some("#00cccc"), // Cyan
-            "37" => color = Some("#cccccc"), // White
-            "0;31" => color = Some("#cc0000"),
-            "0;32" => color = Some("#00cc00"),
-            "0;33" => color = Some("#cccc00"),
-            "0;34" => color = Some("#0066cc"),
-            "0;35" => color = Some("#cc00cc"),
-            "0;36" => color = Some("#00cccc"),
-            "1;33" => { color = Some("#ffff00"); bold = true; } // Bright yellow
-            _ => {}
-        }
-    }
-    (color, bold)
 }
 
 /// Format a timestamp as relative time ("2 hours ago", "3 days ago", etc.)
@@ -274,24 +172,6 @@ type CheckResult = Result<Vec<FlakeUpdate>, flake_checker::FlakeCheckError>;
 
 /// Global storage for background check result
 static CHECK_RESULT: Lazy<Arc<Mutex<Option<CheckResult>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
-
-/// State for async update process
-#[derive(Default)]
-struct UpdateState {
-    /// New output lines to append (raw with ANSI codes)
-    new_output: String,
-    /// Full accumulated raw output (for HTML conversion)
-    full_output: String,
-    /// Current status line
-    status_line: String,
-    /// Whether the process has completed
-    completed: bool,
-    /// Exit status (success/failure message)
-    exit_status: Option<Result<(), String>>,
-}
-
-/// Global storage for background update state
-static UPDATE_STATE: Lazy<Arc<Mutex<UpdateState>>> = Lazy::new(|| Arc::new(Mutex::new(UpdateState::default())));
 
 impl qobject::UpdateChecker {
     /// Perform an update check (async - spawns background thread)
@@ -399,33 +279,19 @@ impl qobject::UpdateChecker {
         }
     }
 
-    pub fn run_update(mut self: Pin<&mut Self>) {
-        if *self.as_ref().update_running() {
-            return;
-        }
-
+    /// Generate the update script and return its path
+    /// This is called by QML to get the script path for the embedded terminal
+    pub fn get_update_script_path(self: Pin<&mut Self>) -> QString {
         let flake_path = self.flake_path().to_string();
         let updates_json = self.updates_json().to_string();
 
         if flake_path.is_empty() {
-            return;
+            return QString::from("");
         }
 
         // Parse updates from JSON
         let updates = updates_from_json(&updates_json);
         let commit_msg = flake_checker::generate_commit_message(&updates);
-
-        // Clear previous output and mark as running
-        self.as_mut().set_update_output(QString::from(""));
-        self.as_mut().set_update_status_line(QString::from("Starting update..."));
-        self.as_mut().set_update_running(true);
-        self.as_mut().output_changed();
-
-        // Clear the update state
-        if let Ok(mut state) = UPDATE_STATE.lock() {
-            *state = UpdateState::default();
-            state.status_line = "Starting update...".to_string();
-        }
 
         // Build the update script
         let script = build_update_script(&flake_path, &commit_msg);
@@ -433,10 +299,8 @@ impl qobject::UpdateChecker {
         // Write script to temp file
         let script_path = std::env::temp_dir().join("nixos-update-script.sh");
         if let Err(e) = std::fs::write(&script_path, &script) {
-            self.as_mut().set_update_status_line(QString::from(&format!("Failed to write script: {}", e)));
-            self.as_mut().set_update_running(false);
-            self.as_mut().output_changed();
-            return;
+            eprintln!("Failed to write script: {}", e);
+            return QString::from("");
         }
 
         // Make executable
@@ -450,80 +314,7 @@ impl qobject::UpdateChecker {
             }
         }
 
-        // Spawn background thread to run the update
-        let script_path_str = script_path.to_string_lossy().to_string();
-        std::thread::spawn(move || {
-            run_update_background(&script_path_str);
-        });
-    }
-
-    /// Poll for update progress (called by QML timer)
-    pub fn poll_update_result(mut self: Pin<&mut Self>) {
-        if !*self.as_ref().update_running() {
-            return;
-        }
-
-        // Check for new output and status
-        let (has_new_output, full_output, status_line, completed, exit_status) = {
-            let mut state = match UPDATE_STATE.lock() {
-                Ok(guard) => guard,
-                Err(_) => return,
-            };
-            let has_new = !state.new_output.is_empty();
-            if has_new {
-                let new_output = std::mem::take(&mut state.new_output);
-                state.full_output.push_str(&new_output);
-            }
-            let full = state.full_output.clone();
-            let status = state.status_line.clone();
-            let done = state.completed;
-            let exit = state.exit_status.take();
-            (has_new, full, status, done, exit)
-        };
-
-        // Update output if there's new content
-        if has_new_output {
-            // Convert full raw output to HTML for rich text display with colors
-            let html = ansi_to_html(&full_output);
-            self.as_mut().set_update_output(QString::from(&html));
-            self.as_mut().output_changed();
-        }
-
-        // Update status line
-        if !status_line.is_empty() {
-            self.as_mut().set_update_status_line(QString::from(&status_line));
-        }
-
-        // Handle completion
-        if completed {
-            self.as_mut().set_update_running(false);
-
-            match exit_status {
-                Some(Ok(())) => {
-                    self.as_mut().set_status_message(QString::from("Update completed successfully"));
-                    // Clear the updates since we just applied them
-                    self.as_mut().set_has_updates(false);
-                    self.as_mut().set_update_count(0);
-                    self.as_mut().set_updates_json(QString::from("[]"));
-
-                    // Also clear cached updates in config
-                    if let Ok(mut config) = Config::load() {
-                        config.cached_updates_json = String::new();
-                        let _ = config.save();
-                    }
-                }
-                Some(Err(msg)) => {
-                    self.as_mut().set_status_message(QString::from(&msg));
-                }
-                None => {
-                    self.as_mut().set_status_message(QString::from("Update completed"));
-                }
-            }
-
-            self.as_mut().output_changed();
-            self.as_mut().update_completed();
-            self.as_mut().updates_changed();
-        }
+        QString::from(&script_path.to_string_lossy().to_string())
     }
 
     pub fn save_config(mut self: Pin<&mut Self>, flake_path: QString, interval: i32, unit: QString) {
@@ -697,101 +488,4 @@ echo -e "${{BOLD}}${{GREEN}}✓ Update complete!${{NC}}"
         flake_path = flake_path,
         escaped_msg = escaped_msg,
     )
-}
-
-/// Run the update script in a background thread
-fn run_update_background(script_path: &str) {
-    // Run pkexec to get sudo privileges, then run the script
-    // Set SHELL to a standard path to avoid pkexec rejecting nix store paths
-    let mut child = match Command::new("pkexec")
-        .arg("bash")
-        .arg(script_path)
-        .env("SHELL", "/bin/sh")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(e) => {
-            if let Ok(mut state) = UPDATE_STATE.lock() {
-                state.status_line = format!("Failed to start: {}", e);
-                state.completed = true;
-                state.exit_status = Some(Err(format!("Failed to start: {}", e)));
-            }
-            return;
-        }
-    };
-
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
-    // Read stdout in a separate thread
-    let stdout_handle = if let Some(stdout) = stdout {
-        Some(std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                if let Ok(mut state) = UPDATE_STATE.lock() {
-                    state.new_output.push_str(&line);
-                    state.new_output.push('\n');
-                    // Update status line with the last non-empty line
-                    if !line.trim().is_empty() {
-                        state.status_line = line;
-                    }
-                }
-            }
-        }))
-    } else {
-        None
-    };
-
-    // Read stderr in a separate thread
-    let stderr_handle = if let Some(stderr) = stderr {
-        Some(std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                if let Ok(mut state) = UPDATE_STATE.lock() {
-                    state.new_output.push_str(&line);
-                    state.new_output.push('\n');
-                    // Update status line with the last non-empty line
-                    if !line.trim().is_empty() {
-                        state.status_line = line;
-                    }
-                }
-            }
-        }))
-    } else {
-        None
-    };
-
-    // Wait for reader threads to finish
-    if let Some(handle) = stdout_handle {
-        let _ = handle.join();
-    }
-    if let Some(handle) = stderr_handle {
-        let _ = handle.join();
-    }
-
-    // Wait for the process to exit
-    let status = child.wait();
-
-    // Mark completion with result
-    if let Ok(mut state) = UPDATE_STATE.lock() {
-        state.completed = true;
-        match status {
-            Ok(s) if s.success() => {
-                state.status_line = "✓ Update complete!".to_string();
-                state.exit_status = Some(Ok(()));
-            }
-            Ok(s) => {
-                let msg = format!("Update failed (exit code: {:?})", s.code());
-                state.status_line = msg.clone();
-                state.exit_status = Some(Err(msg));
-            }
-            Err(e) => {
-                let msg = format!("Update error: {}", e);
-                state.status_line = msg.clone();
-                state.exit_status = Some(Err(msg));
-            }
-        }
-    }
 }

@@ -1,0 +1,44 @@
+#ifndef TERMINAL_WIDGET_H
+#define TERMINAL_WIDGET_H
+
+#include <QObject>
+#include <QWindow>
+#include <QWidget>
+#include <qtermwidget6/qtermwidget.h>
+
+class TerminalWidget : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(QWindow* window READ window NOTIFY windowReady)
+    Q_PROPERTY(bool running READ running NOTIFY runningChanged)
+
+public:
+    explicit TerminalWidget(QObject *parent = nullptr);
+    ~TerminalWidget();
+
+    QWindow* window() const;
+    bool running() const { return m_running; }
+
+    Q_INVOKABLE void runCommand(const QString &command);
+    Q_INVOKABLE void runScript(const QString &scriptPath);
+    Q_INVOKABLE void clear();
+    Q_INVOKABLE void show();
+    Q_INVOKABLE void hide();
+
+signals:
+    void finished(int exitCode);
+    void windowReady();
+    void runningChanged();
+    void outputReceived(const QString &text);
+
+private slots:
+    void onFinished();
+
+private:
+    QTermWidget *m_terminal;
+    bool m_running;
+};
+
+// Registration function to be called from Rust (C linkage)
+extern "C" void register_terminal_type();
+
+#endif // TERMINAL_WIDGET_H

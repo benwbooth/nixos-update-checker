@@ -528,6 +528,7 @@ dependencies = [
 name = "nixos-update-checker"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "chrono",
  "chrono-humanize",
  "cxx",

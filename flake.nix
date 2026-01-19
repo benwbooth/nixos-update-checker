@@ -31,6 +31,9 @@
           pkgs.qt6.qttools
         ];
 
+        # QTermWidget for embedded terminal
+        qtermwidget = pkgs.lxqt.qtermwidget;
+
         nativeBuildInputs = with pkgs; [
           rustToolchain
           pkg-config
@@ -45,6 +48,7 @@
           qt6.qtsvg
           qt6.qttools
           libGL
+          lxqt.qtermwidget
         ];
 
         # Runtime dependencies for the update script
@@ -86,6 +90,12 @@
             # Override QMAKE that wrapQtAppsHook sets - we need our qtEnv qmake
             export QMAKE="${qtEnv}/bin/qmake"
             export PATH="${qtEnv}/libexec:$PATH"
+            # Qt paths for build script
+            export QT_INCLUDE_PATH="${qtEnv}/include"
+            export QT_LIBEXEC_PATH="${qtEnv}/libexec"
+            # QTermWidget paths for embedding terminal
+            export QTERMWIDGET_INCLUDE_PATH="${qtermwidget}/include"
+            export QTERMWIDGET_LIB_PATH="${qtermwidget}/lib"
           '';
 
           desktopItems = [
@@ -141,6 +151,9 @@
             echo "Run 'cargo build' to build the project"
             export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
             export QMAKE="${qtEnv}/bin/qmake"
+            # QTermWidget paths for embedding terminal
+            export QTERMWIDGET_INCLUDE_PATH="${qtermwidget}/include"
+            export QTERMWIDGET_LIB_PATH="${qtermwidget}/lib"
           '';
         };
 
