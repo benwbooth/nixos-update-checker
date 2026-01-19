@@ -284,7 +284,7 @@ ApplicationWindow {
 
                     Label {
                         text: checker.has_updates
-                            ? checker.update_count + " package(s) available"
+                            ? checker.update_count + (checker.update_count === 1 ? " package" : " packages") + " available"
                             : "No updates available"
                         color: checker.has_updates ? "#2196F3" : palette.text
                     }
