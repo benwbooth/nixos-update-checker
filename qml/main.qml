@@ -309,10 +309,49 @@ ApplicationWindow {
                         delegate: Label {
                             text: {
                                 var name = modelData.package_name
+                                var oldName = modelData.old_package_name || ""
                                 var oldHash = modelData.old_hash_short || ""
                                 var newHash = modelData.hash_short || ""
-                                if (oldHash && newHash) {
-                                    return "• " + name + " (" + oldHash + " → " + newHash + ")"
+
+                                // Extract version from package name (e.g., "firefox-120.0" -> "120.0")
+                                function extractVersion(pkgName) {
+                                    var lastDash = pkgName.lastIndexOf('-')
+                                    if (lastDash > 0) {
+                                        var after = pkgName.substring(lastDash + 1)
+                                        if (after.length > 0 && /^\d/.test(after)) {
+                                            return after
+                                        }
+                                    }
+                                    return null
+                                }
+
+                                // Extract base name (without version)
+                                function baseName(pkgName) {
+                                    var lastDash = pkgName.lastIndexOf('-')
+                                    if (lastDash > 0) {
+                                        var after = pkgName.substring(lastDash + 1)
+                                        if (after.length > 0 && /^\d/.test(after)) {
+                                            return pkgName.substring(0, lastDash)
+                                        }
+                                    }
+                                    return pkgName
+                                }
+
+                                var newVersion = extractVersion(name)
+                                var oldVersion = oldName ? extractVersion(oldName) : null
+                                var base = baseName(name)
+
+                                // Prefer version display over hash display
+                                if (oldVersion && newVersion && oldVersion !== newVersion) {
+                                    return "• " + base + " (" + oldVersion + " → " + newVersion + ")"
+                                } else if (oldVersion && newVersion && oldVersion === newVersion && oldHash && newHash) {
+                                    return "• " + base + " (" + oldVersion + " " + oldHash + " → " + newHash + ")"
+                                } else if (!oldVersion && newVersion && oldHash) {
+                                    return "• " + base + " (" + oldHash + " → " + newVersion + ")"
+                                } else if (oldVersion && !newVersion && newHash) {
+                                    return "• " + base + " (" + oldVersion + " → " + newHash + ")"
+                                } else if (oldHash && newHash) {
+                                    return "• " + base + " (" + oldHash + " → " + newHash + ")"
                                 } else if (newHash) {
                                     return "• " + name + " (new: " + newHash + ")"
                                 } else {

@@ -20,6 +20,9 @@ pub enum FlakeCheckError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlakeUpdate {
     pub package_name: String,
+    /// Full name of the OLD (currently installed) package
+    #[serde(default)]
+    pub old_package_name: String,
     /// First 8 chars of the NEW nix store hash
     #[serde(default)]
     pub hash_short: String,
@@ -29,14 +32,62 @@ pub struct FlakeUpdate {
 }
 
 impl FlakeUpdate {
+    /// Extract version from a package name (e.g., "firefox-120.0" -> "120.0")
+    fn extract_version(name: &str) -> Option<&str> {
+        if let Some(pos) = name.rfind('-') {
+            let after = &name[pos + 1..];
+            if after.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                return Some(after);
+            }
+        }
+        None
+    }
+
+    /// Get the new version
+    pub fn version(&self) -> Option<&str> {
+        Self::extract_version(&self.package_name)
+    }
+
+    /// Get the old version
+    pub fn old_version(&self) -> Option<&str> {
+        if self.old_package_name.is_empty() {
+            None
+        } else {
+            Self::extract_version(&self.old_package_name)
+        }
+    }
+
     /// Format the update for display in tooltip
     pub fn display(&self) -> String {
-        if !self.old_hash_short.is_empty() && !self.hash_short.is_empty() {
-            format!("{} ({} → {})", self.package_name, self.old_hash_short, self.hash_short)
-        } else if !self.hash_short.is_empty() {
-            format!("{} (new: {})", self.package_name, self.hash_short)
-        } else {
-            self.package_name.clone()
+        let new_ver = self.version();
+        let old_ver = self.old_version();
+
+        match (old_ver, new_ver) {
+            // Both have versions and they differ
+            (Some(old), Some(new)) if old != new => {
+                format!("{} ({} → {})", self.base_name(), old, new)
+            }
+            // Both have same version, show with hash
+            (Some(old), Some(new)) if old == new && !self.old_hash_short.is_empty() && !self.hash_short.is_empty() => {
+                format!("{} ({} {} → {})", self.base_name(), old, self.old_hash_short, self.hash_short)
+            }
+            // Only new has version
+            (None, Some(new)) if !self.old_hash_short.is_empty() => {
+                format!("{} ({} → {})", self.base_name(), self.old_hash_short, new)
+            }
+            // Only old has version
+            (Some(old), None) if !self.hash_short.is_empty() => {
+                format!("{} ({} → {})", self.base_name(), old, self.hash_short)
+            }
+            // Fall back to hash display
+            _ if !self.old_hash_short.is_empty() && !self.hash_short.is_empty() => {
+                format!("{} ({} → {})", self.base_name(), self.old_hash_short, self.hash_short)
+            }
+            // New package
+            _ if !self.hash_short.is_empty() => {
+                format!("{} (new: {})", self.package_name, self.hash_short)
+            }
+            _ => self.package_name.clone(),
         }
     }
 
@@ -277,9 +328,12 @@ fn gethostname() -> String {
         .unwrap_or_else(|_| "nixos".to_string())
 }
 
-/// Get a map of package base names to their current hash (from current system)
-async fn get_current_system_packages() -> std::collections::HashMap<String, String> {
-    let mut packages: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+/// Package info from current system: (full_name, hash_short)
+type CurrentPackageInfo = (String, String);
+
+/// Get a map of package base names to their current info (full name + hash)
+async fn get_current_system_packages() -> std::collections::HashMap<String, CurrentPackageInfo> {
+    let mut packages: std::collections::HashMap<String, CurrentPackageInfo> = std::collections::HashMap::new();
 
     // Query the current system closure
     let output = Command::new("nix-store")
@@ -296,6 +350,7 @@ async fn get_current_system_packages() -> std::collections::HashMap<String, Stri
                 // Use base name for matching
                 let update = FlakeUpdate {
                     package_name: name.clone(),
+                    old_package_name: String::new(),
                     hash_short: String::new(),
                     old_hash_short: String::new(),
                 };
@@ -312,12 +367,11 @@ async fn get_current_system_packages() -> std::collections::HashMap<String, Stri
         }
     }
 
-    // Convert to just base_name -> hash
-    packages.into_iter().map(|(k, (_, h))| (k, h)).collect()
+    packages
 }
 
 /// Parse the output of `nixos-rebuild dry-build` to extract packages
-fn parse_dry_build_output(output: &str, current_packages: &std::collections::HashMap<String, String>) -> Result<Vec<FlakeUpdate>, FlakeCheckError> {
+fn parse_dry_build_output(output: &str, current_packages: &std::collections::HashMap<String, CurrentPackageInfo>) -> Result<Vec<FlakeUpdate>, FlakeCheckError> {
     let mut updates: Vec<FlakeUpdate> = Vec::new();
     let mut in_build_list = false;
 
@@ -339,17 +393,22 @@ fn parse_dry_build_output(output: &str, current_packages: &std::collections::Has
         if in_build_list && trimmed.starts_with("/nix/store/") {
             // Extract package info from path like /nix/store/xxx-packagename-1.2.3.drv
             if let Some((name, hash)) = extract_package_info(trimmed) {
-                // Look up old hash from current system
+                // Look up old package info from current system
                 let temp_update = FlakeUpdate {
                     package_name: name.clone(),
+                    old_package_name: String::new(),
                     hash_short: String::new(),
                     old_hash_short: String::new(),
                 };
                 let base_name = temp_update.base_name();
-                let old_hash = current_packages.get(base_name).cloned().unwrap_or_default();
+                let (old_name, old_hash) = current_packages
+                    .get(base_name)
+                    .cloned()
+                    .unwrap_or_default();
 
                 let new_update = FlakeUpdate {
                     package_name: name.clone(),
+                    old_package_name: old_name,
                     hash_short: hash,
                     old_hash_short: old_hash,
                 };
@@ -531,7 +590,7 @@ these 3 derivations will be built:
 these paths will be fetched (500 MiB):
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-glibc-2.38
 "#;
-        let current = std::collections::HashMap::new();
+        let current: std::collections::HashMap<String, CurrentPackageInfo> = std::collections::HashMap::new();
         let updates = parse_dry_build_output(output, &current).unwrap();
         assert_eq!(updates.len(), 4);
         assert!(updates.iter().any(|u| u.package_name == "firefox-120.0"));
@@ -550,7 +609,7 @@ these derivations will be built:
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-unit-dbus.service.drv
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-chromium-119.0.drv
 "#;
-        let current = std::collections::HashMap::new();
+        let current: std::collections::HashMap<String, CurrentPackageInfo> = std::collections::HashMap::new();
         let updates = parse_dry_build_output(output, &current).unwrap();
         // Should only have firefox and chromium, not the internal packages
         assert_eq!(updates.len(), 2);
@@ -577,6 +636,7 @@ these derivations will be built:
     fn test_base_name() {
         let update = FlakeUpdate {
             package_name: "whisper-typer-0.1.0".to_string(),
+            old_package_name: String::new(),
             hash_short: "abcd1234".to_string(),
             old_hash_short: String::new(),
         };
@@ -584,6 +644,7 @@ these derivations will be built:
 
         let update = FlakeUpdate {
             package_name: "whisper-typer".to_string(),
+            old_package_name: String::new(),
             hash_short: "abcd1234".to_string(),
             old_hash_short: String::new(),
         };
@@ -597,7 +658,7 @@ these derivations will be built:
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-whisper-typer-0.1.0.drv
   /nix/store/xyzdefghijklmnopqrstuvwxyz012345-whisper-typer.drv
 "#;
-        let current = std::collections::HashMap::new();
+        let current: std::collections::HashMap<String, CurrentPackageInfo> = std::collections::HashMap::new();
         let updates = parse_dry_build_output(output, &current).unwrap();
         // Should only have one entry, preferring the one with version
         assert_eq!(updates.len(), 1);
@@ -611,12 +672,13 @@ these derivations will be built:
 these derivations will be built:
   /nix/store/newhashabcdefghijklmnopqrstuvwxy-firefox-120.0.drv
 "#;
-        let mut current = std::collections::HashMap::new();
-        current.insert("firefox".to_string(), "oldhas12".to_string());
+        let mut current: std::collections::HashMap<String, CurrentPackageInfo> = std::collections::HashMap::new();
+        current.insert("firefox".to_string(), ("firefox-119.0".to_string(), "oldhas12".to_string()));
 
         let updates = parse_dry_build_output(output, &current).unwrap();
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].package_name, "firefox-120.0");
+        assert_eq!(updates[0].old_package_name, "firefox-119.0");
         assert_eq!(updates[0].hash_short, "newhasha");
         assert_eq!(updates[0].old_hash_short, "oldhas12");
     }
@@ -624,11 +686,43 @@ these derivations will be built:
     #[test]
     fn test_generate_commit_message() {
         let updates = vec![
-            FlakeUpdate { package_name: "firefox-120.0".to_string(), hash_short: "abcd1234".to_string(), old_hash_short: String::new() },
-            FlakeUpdate { package_name: "chromium-119.0".to_string(), hash_short: "efgh5678".to_string(), old_hash_short: String::new() },
+            FlakeUpdate { package_name: "firefox-120.0".to_string(), old_package_name: String::new(), hash_short: "abcd1234".to_string(), old_hash_short: String::new() },
+            FlakeUpdate { package_name: "chromium-119.0".to_string(), old_package_name: String::new(), hash_short: "efgh5678".to_string(), old_hash_short: String::new() },
         ];
 
         let msg = generate_commit_message(&updates);
         assert!(msg.contains("2 packages"));
+    }
+
+    #[test]
+    fn test_version_display() {
+        // Version upgrade
+        let update = FlakeUpdate {
+            package_name: "firefox-120.0".to_string(),
+            old_package_name: "firefox-119.0".to_string(),
+            hash_short: "newhash1".to_string(),
+            old_hash_short: "oldhash1".to_string(),
+        };
+        assert_eq!(update.version(), Some("120.0"));
+        assert_eq!(update.old_version(), Some("119.0"));
+        assert_eq!(update.display(), "firefox (119.0 → 120.0)");
+
+        // Same version, different hash
+        let update = FlakeUpdate {
+            package_name: "myapp-1.0.0".to_string(),
+            old_package_name: "myapp-1.0.0".to_string(),
+            hash_short: "newhash1".to_string(),
+            old_hash_short: "oldhash1".to_string(),
+        };
+        assert_eq!(update.display(), "myapp (1.0.0 oldhash1 → newhash1)");
+
+        // No version info, fall back to hashes
+        let update = FlakeUpdate {
+            package_name: "myapp".to_string(),
+            old_package_name: "myapp".to_string(),
+            hash_short: "newhash1".to_string(),
+            old_hash_short: "oldhash1".to_string(),
+        };
+        assert_eq!(update.display(), "myapp (oldhash1 → newhash1)");
     }
 }
