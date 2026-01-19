@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NixOS Update Checker
+Comment=Monitor NixOS flake repository for updates
+Exec=nixos-update-checker
+Icon=nixos-update-checker
+Terminal=false
+Categories=System;Monitor;
+Keywords=nixos;nix;update;flake;
+StartupNotify=false
+StartupWMClass=nixos-update-checker

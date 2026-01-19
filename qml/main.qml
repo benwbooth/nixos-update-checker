@@ -8,8 +8,8 @@ import NixosUpdateChecker
 ApplicationWindow {
     id: root
     visible: false  // Start hidden - show via tray menu
-    width: 500
-    height: outputExpanded ? 550 : 350
+    width: 1000
+    height: outputExpanded ? 1200 : 770
     title: "NixOS Update Checker"
     flags: Qt.Dialog | Qt.WindowStaysOnTopHint
 
@@ -33,8 +33,25 @@ ApplicationWindow {
         onConfig_loaded: {
             flakePathField.text = checker.flake_path
             intervalSpinBox.value = checker.check_interval
-            // Start periodic checking
-            checkTimer.interval = checker.check_interval * 60 * 1000
+            // Set the unit combo box
+            var unit = checker.check_interval_unit
+            if (unit === "days") {
+                unitCombo.currentIndex = 1
+            } else if (unit === "weeks") {
+                unitCombo.currentIndex = 2
+            } else {
+                unitCombo.currentIndex = 0  // hours
+            }
+            // Calculate interval in milliseconds based on unit
+            var minutes = checker.check_interval
+            if (unit === "days") {
+                minutes = checker.check_interval * 24 * 60
+            } else if (unit === "weeks") {
+                minutes = checker.check_interval * 7 * 24 * 60
+            } else {
+                minutes = checker.check_interval * 60
+            }
+            checkTimer.interval = minutes * 60 * 1000
             checkTimer.start()
         }
 
@@ -68,6 +85,24 @@ ApplicationWindow {
         repeat: true
         running: false
         onTriggered: checker.check_now()
+    }
+
+    // Timer to poll for check completion (async check)
+    Timer {
+        id: pollTimer
+        interval: 100
+        repeat: true
+        running: checker.checking
+        onTriggered: checker.poll_check_result()
+    }
+
+    // Timer to poll for update progress (async update)
+    Timer {
+        id: updatePollTimer
+        interval: 100
+        repeat: true
+        running: checker.update_running
+        onTriggered: checker.poll_update_result()
     }
 
     // System tray icon
@@ -151,13 +186,26 @@ ApplicationWindow {
                 placeholderText: "/etc/nixos"
             }
 
-            Label { text: "Check Interval (minutes):" }
-            SpinBox {
-                id: intervalSpinBox
-                from: 5
-                to: 1440
-                value: 60
-                editable: true
+            Label { text: "Check Interval:" }
+            RowLayout {
+                spacing: 10
+                SpinBox {
+                    id: intervalSpinBox
+                    from: 1
+                    to: 99
+                    value: 1
+                    editable: true
+                }
+                ComboBox {
+                    id: unitCombo
+                    model: [
+                        { text: "Hours", value: "hours" },
+                        { text: "Days", value: "days" },
+                        { text: "Weeks", value: "weeks" }
+                    ]
+                    textRole: "text"
+                    currentIndex: 0
+                }
             }
         }
 
@@ -249,14 +297,7 @@ ApplicationWindow {
             Button {
                 text: checker.checking ? "Checking..." : "Check Now"
                 enabled: !checker.checking && flakePathField.text.length > 0
-                onClicked: {
-                    // Save first if changed
-                    if (flakePathField.text !== checker.flake_path ||
-                        intervalSpinBox.value !== checker.check_interval) {
-                        checker.save_config(flakePathField.text, intervalSpinBox.value)
-                    }
-                    checker.check_now()
-                }
+                onClicked: checker.check_now()
             }
 
             Button {
@@ -270,7 +311,8 @@ ApplicationWindow {
             Button {
                 text: "Save"
                 onClicked: {
-                    checker.save_config(flakePathField.text, intervalSpinBox.value)
+                    var unit = unitCombo.model[unitCombo.currentIndex].value
+                    checker.save_config(flakePathField.text, intervalSpinBox.value, unit)
                 }
             }
 

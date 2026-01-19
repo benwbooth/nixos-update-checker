@@ -15,17 +15,63 @@ pub enum ConfigError {
     SerializeError(#[from] toml::ser::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum IntervalUnit {
+    #[default]
+    Hours,
+    Days,
+    Weeks,
+}
+
+impl IntervalUnit {
+    pub fn to_minutes(&self, value: u32) -> u32 {
+        match self {
+            IntervalUnit::Hours => value * 60,
+            IntervalUnit::Days => value * 60 * 24,
+            IntervalUnit::Weeks => value * 60 * 24 * 7,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            IntervalUnit::Hours => "hours",
+            IntervalUnit::Days => "days",
+            IntervalUnit::Weeks => "weeks",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "days" => IntervalUnit::Days,
+            "weeks" => IntervalUnit::Weeks,
+            _ => IntervalUnit::Hours,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub flake_path: String,
-    pub check_interval_minutes: u32,
+    pub check_interval: u32,
+    #[serde(default)]
+    pub check_interval_unit: IntervalUnit,
+    /// Unix timestamp of last check (seconds since epoch)
+    #[serde(default)]
+    pub last_check_timestamp: i64,
+    /// Cached updates from last check (JSON array)
+    #[serde(default)]
+    pub cached_updates_json: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             flake_path: "/etc/nixos".to_string(),
-            check_interval_minutes: 60,
+            check_interval: 1,
+            check_interval_unit: IntervalUnit::Hours,
+            last_check_timestamp: 0,
+            cached_updates_json: String::new(),
         }
     }
 }
@@ -33,8 +79,9 @@ impl Default for Config {
 impl Config {
     /// Get the path to the config file
     pub fn config_path() -> Result<PathBuf, ConfigError> {
-        let config_dir = dirs::config_dir().ok_or(ConfigError::NoConfigDir)?;
-        Ok(config_dir.join("nixos-update-checker").join("config.toml"))
+        let project_dirs = directories::ProjectDirs::from("", "", "nixos-update-checker")
+            .ok_or(ConfigError::NoConfigDir)?;
+        Ok(project_dirs.config_dir().join("config.toml"))
     }
 
     /// Load config from the default XDG config path
@@ -67,12 +114,37 @@ impl Config {
 
     /// Check if the config is valid (has required fields set)
     pub fn is_valid(&self) -> bool {
-        !self.flake_path.is_empty() && self.check_interval_minutes > 0
+        !self.flake_path.is_empty() && self.check_interval > 0
     }
 
     /// Get the flake path as a PathBuf
     pub fn flake_path(&self) -> PathBuf {
         PathBuf::from(&self.flake_path)
+    }
+
+    /// Get the check interval in minutes
+    pub fn interval_minutes(&self) -> u32 {
+        self.check_interval_unit.to_minutes(self.check_interval)
+    }
+
+    /// Check if it's time for a new check
+    pub fn is_check_due(&self) -> bool {
+        if self.last_check_timestamp == 0 {
+            // Never checked before
+            return true;
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let interval_seconds = (self.interval_minutes() as i64) * 60;
+        let next_check = self.last_check_timestamp + interval_seconds;
+
+        now >= next_check
+    }
+
+    /// Update the last check timestamp to now and save
+    pub fn mark_checked(&mut self) -> Result<(), ConfigError> {
+        self.last_check_timestamp = chrono::Utc::now().timestamp();
+        self.save()
     }
 }
 
@@ -83,7 +155,8 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.check_interval_minutes, 60);
+        assert_eq!(config.check_interval, 1);
+        assert_eq!(config.check_interval_unit, IntervalUnit::Hours);
         assert_eq!(config.flake_path, "/etc/nixos");
     }
 
@@ -91,13 +164,34 @@ mod tests {
     fn test_config_serialization() {
         let config = Config {
             flake_path: "/home/user/nixos".to_string(),
-            check_interval_minutes: 30,
+            check_interval: 6,
+            check_interval_unit: IntervalUnit::Hours,
+            last_check_timestamp: 0,
+            cached_updates_json: String::new(),
         };
 
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
 
         assert_eq!(parsed.flake_path, config.flake_path);
-        assert_eq!(parsed.check_interval_minutes, config.check_interval_minutes);
+        assert_eq!(parsed.check_interval, config.check_interval);
+        assert_eq!(parsed.check_interval_unit, config.check_interval_unit);
+    }
+
+    #[test]
+    fn test_interval_minutes() {
+        let mut config = Config::default();
+
+        config.check_interval = 2;
+        config.check_interval_unit = IntervalUnit::Hours;
+        assert_eq!(config.interval_minutes(), 120);
+
+        config.check_interval = 1;
+        config.check_interval_unit = IntervalUnit::Days;
+        assert_eq!(config.interval_minutes(), 1440);
+
+        config.check_interval = 1;
+        config.check_interval_unit = IntervalUnit::Weeks;
+        assert_eq!(config.interval_minutes(), 10080);
     }
 }

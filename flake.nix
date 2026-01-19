@@ -110,6 +110,14 @@
           postInstall = ''
             wrapProgram $out/bin/nixos-update-checker \
               --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
+
+            # Install desktop file
+            mkdir -p $out/share/applications
+            cp resources/nixos-update-checker.desktop $out/share/applications/
+
+            # Install icon
+            mkdir -p $out/share/icons/hicolor/scalable/apps
+            cp resources/icons/nix-flake.svg $out/share/icons/hicolor/scalable/apps/nixos-update-checker.svg
           '';
 
           QMAKE = "${pkgs.qt6.qtbase.dev}/bin/qmake";

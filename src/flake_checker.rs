@@ -1,6 +1,5 @@
-use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use thiserror::Error;
 use tokio::process::Command;
@@ -13,46 +12,166 @@ pub enum FlakeCheckError {
     CommandFailed(#[from] std::io::Error),
     #[error("Nix command returned error: {0}")]
     NixError(String),
+    #[error("Not a git repository: {0}")]
+    NotGitRepo(String),
 }
 
-/// Represents a single flake input update
+/// Represents a package that would be updated
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlakeUpdate {
-    pub input_name: String,
-    pub old_rev: String,
-    pub new_rev: String,
-    pub old_date: Option<String>,
-    pub new_date: Option<String>,
+    pub package_name: String,
 }
 
 impl FlakeUpdate {
     /// Format the update for display in tooltip
     pub fn display(&self) -> String {
-        let old = if let Some(date) = &self.old_date {
-            format!("{} ({})", self.short_rev(&self.old_rev), date)
-        } else {
-            self.short_rev(&self.old_rev)
-        };
-
-        let new = if let Some(date) = &self.new_date {
-            format!("{} ({})", self.short_rev(&self.new_rev), date)
-        } else {
-            self.short_rev(&self.new_rev)
-        };
-
-        format!("{}: {} → {}", self.input_name, old, new)
-    }
-
-    fn short_rev(&self, rev: &str) -> String {
-        if rev.len() > 7 {
-            rev[..7].to_string()
-        } else {
-            rev.to_string()
-        }
+        self.package_name.clone()
     }
 }
 
+/// Get the cache directory for a given flake path
+fn get_cache_dir(flake_path: &Path) -> PathBuf {
+    let cache_dir = directories::ProjectDirs::from("", "", "nixos-update-checker")
+        .map(|dirs| dirs.cache_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("/tmp/nixos-update-checker"));
+
+    // Create a safe directory name from the flake path
+    let safe_name = flake_path
+        .to_string_lossy()
+        .replace('/', "_")
+        .replace('\\', "_")
+        .trim_start_matches('_')
+        .to_string();
+
+    cache_dir.join("repos").join(safe_name)
+}
+
+/// Get the git remote URL by reading .git/config directly (avoids ownership issues)
+fn get_git_remote(repo_path: &Path) -> Result<String, FlakeCheckError> {
+    let git_config = repo_path.join(".git").join("config");
+
+    if !git_config.exists() {
+        return Err(FlakeCheckError::NotGitRepo(repo_path.display().to_string()));
+    }
+
+    let content = std::fs::read_to_string(&git_config).map_err(|e| {
+        FlakeCheckError::NixError(format!("Failed to read git config: {}", e))
+    })?;
+
+    // Parse the git config to find remote.origin.url
+    let mut in_remote_origin = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[remote \"origin\"]" {
+            in_remote_origin = true;
+        } else if trimmed.starts_with('[') {
+            in_remote_origin = false;
+        } else if in_remote_origin && trimmed.starts_with("url = ") {
+            return Ok(trimmed.strip_prefix("url = ").unwrap().to_string());
+        }
+    }
+
+    Err(FlakeCheckError::NixError("No origin remote found".to_string()))
+}
+
+/// Get the current branch by reading .git/HEAD directly
+fn get_git_branch(repo_path: &Path) -> Result<String, FlakeCheckError> {
+    let head_file = repo_path.join(".git").join("HEAD");
+
+    if !head_file.exists() {
+        return Ok("main".to_string());
+    }
+
+    let content = std::fs::read_to_string(&head_file).map_err(|_| {
+        FlakeCheckError::NixError("Failed to read HEAD".to_string())
+    })?;
+
+    // HEAD contains "ref: refs/heads/branch-name" or a commit hash
+    if let Some(branch) = content.trim().strip_prefix("ref: refs/heads/") {
+        Ok(branch.to_string())
+    } else {
+        Ok("main".to_string()) // Detached HEAD, default to main
+    }
+}
+
+/// Clone or update the cache repository
+async fn sync_cache_repo(original_path: &Path, cache_path: &Path) -> Result<(), FlakeCheckError> {
+    // Get the remote URL from the original repo (reads .git/config directly)
+    let remote_url = get_git_remote(original_path)?;
+    let branch = get_git_branch(original_path)?;
+
+    eprintln!("Remote URL: {}, Branch: {}", remote_url, branch);
+
+    if cache_path.join(".git").exists() {
+        // Cache exists, fetch and reset to match remote
+        eprintln!("Updating cache at {}", cache_path.display());
+
+        let fetch = Command::new("git")
+            .args(["fetch", "origin", &branch])
+            .current_dir(cache_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await?;
+
+        if !fetch.status.success() {
+            let stderr = String::from_utf8_lossy(&fetch.stderr);
+            return Err(FlakeCheckError::NixError(format!("Git fetch failed: {}", stderr)));
+        }
+
+        let reset = Command::new("git")
+            .args(["reset", "--hard", &format!("origin/{}", branch)])
+            .current_dir(cache_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await?;
+
+        if !reset.status.success() {
+            let stderr = String::from_utf8_lossy(&reset.stderr);
+            return Err(FlakeCheckError::NixError(format!("Git reset failed: {}", stderr)));
+        }
+    } else {
+        // Clone the repository
+        eprintln!("Cloning {} to {}", remote_url, cache_path.display());
+
+        // Create parent directory
+        if let Some(parent) = cache_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                FlakeCheckError::NixError(format!("Failed to create cache directory: {}", e))
+            })?;
+        }
+
+        let clone = Command::new("git")
+            .args(["clone", "--branch", &branch, "--single-branch", &remote_url])
+            .arg(cache_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await?;
+
+        if !clone.status.success() {
+            let stderr = String::from_utf8_lossy(&clone.stderr);
+            return Err(FlakeCheckError::NixError(format!("Git clone failed: {}", stderr)));
+        }
+    }
+
+    // Copy the current flake.lock from the original to the cache
+    // This ensures we're comparing against the current state
+    let original_lock = original_path.join("flake.lock");
+    let cache_lock = cache_path.join("flake.lock");
+
+    if original_lock.exists() {
+        std::fs::copy(&original_lock, &cache_lock).map_err(|e| {
+            FlakeCheckError::NixError(format!("Failed to copy flake.lock: {}", e))
+        })?;
+    }
+
+    Ok(())
+}
+
 /// Check for flake updates without actually applying them
+/// We clone/sync the repo to a user-writable cache directory and check there
 pub async fn check_for_updates(flake_path: &Path) -> Result<Vec<FlakeUpdate>, FlakeCheckError> {
     if !flake_path.exists() {
         return Err(FlakeCheckError::PathNotFound(
@@ -60,101 +179,120 @@ pub async fn check_for_updates(flake_path: &Path) -> Result<Vec<FlakeUpdate>, Fl
         ));
     }
 
-    // Run nix flake update --dry-run
-    let output = Command::new("nix")
-        .args(["flake", "update", "--dry-run"])
-        .current_dir(flake_path)
+    // Get or create the cache directory
+    let cache_path = get_cache_dir(flake_path);
+
+    // Sync the cache with the original repo
+    sync_cache_repo(flake_path, &cache_path).await?;
+
+    // Run nix flake update in the cache directory
+    eprintln!("Running nix flake update in {}", cache_path.display());
+
+    let update_output = Command::new("nix")
+        .args(["flake", "update"])
+        .current_dir(&cache_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await?;
 
-    // nix flake update --dry-run outputs to stderr
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let update_stderr = String::from_utf8_lossy(&update_output.stderr);
+    eprintln!("Nix flake update output:\n{}", update_stderr);
 
-    // Combine both outputs for parsing
+    eprintln!("Checking what packages would be rebuilt...");
+
+    // Get hostname for the flake reference
+    let hostname = gethostname();
+
+    // Run nixos-rebuild dry-build to see what packages would change
+    eprintln!("Running: nixos-rebuild dry-build --flake .#{}", hostname);
+
+    let dry_build = Command::new("nixos-rebuild")
+        .args([
+            "dry-build",
+            "--flake",
+            &format!(".#{}", hostname),
+        ])
+        .current_dir(&cache_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+
+    let stdout = String::from_utf8_lossy(&dry_build.stdout);
+    let stderr = String::from_utf8_lossy(&dry_build.stderr);
     let combined = format!("{}\n{}", stdout, stderr);
 
-    // Parse the output for updates
-    parse_flake_update_output(&combined)
+    eprintln!("nixos-rebuild dry-build exit status: {:?}", dry_build.status);
+    eprintln!("nixos-rebuild dry-build output:\n{}", combined);
+
+    if !dry_build.status.success() {
+        return Err(FlakeCheckError::NixError(format!(
+            "nixos-rebuild dry-build failed: {}",
+            stderr.lines().take(5).collect::<Vec<_>>().join("\n")
+        )));
+    }
+
+    // Parse the output for packages that would be built
+    parse_dry_build_output(&combined)
 }
 
-/// Parse the output of `nix flake update --dry-run` to extract updates
-fn parse_flake_update_output(output: &str) -> Result<Vec<FlakeUpdate>, FlakeCheckError> {
+/// Get the system hostname
+fn gethostname() -> String {
+    std::fs::read_to_string("/etc/hostname")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "nixos".to_string())
+}
+
+/// Parse the output of `nixos-rebuild dry-build` to extract packages
+fn parse_dry_build_output(output: &str) -> Result<Vec<FlakeUpdate>, FlakeCheckError> {
     let mut updates = Vec::new();
+    let mut in_build_list = false;
 
-    // Pattern for update lines like:
-    // • Updated input 'nixpkgs':
-    //     'github:NixOS/nixpkgs/abc123' (2024-01-01)
-    //   → 'github:NixOS/nixpkgs/def456' (2024-01-15)
-    //
-    // Or simpler format:
-    // • Updated input 'nixpkgs': 'github:...' -> 'github:...'
+    for line in output.lines() {
+        let trimmed = line.trim();
 
-    // Regex for the multi-line format
-    let update_header = Regex::new(r"[•\*]\s*Updated input '([^']+)'").unwrap();
-    let ref_line = Regex::new(r"'([^']+/([a-f0-9]+))'(?:\s*\(([^)]+)\))?").unwrap();
-
-    let lines: Vec<&str> = output.lines().collect();
-    let mut i = 0;
-
-    while i < lines.len() {
-        let line = lines[i];
-
-        if let Some(caps) = update_header.captures(line) {
-            let input_name = caps.get(1).unwrap().as_str().to_string();
-
-            // Look for old and new refs in subsequent lines or same line
-            let mut old_rev = String::new();
-            let mut new_rev = String::new();
-            let mut old_date = None;
-            let mut new_date = None;
-
-            // Check if refs are on the same line
-            let refs_on_line: Vec<_> = ref_line.captures_iter(line).collect();
-            if refs_on_line.len() >= 2 {
-                old_rev = refs_on_line[0].get(2).unwrap().as_str().to_string();
-                old_date = refs_on_line[0].get(3).map(|m| m.as_str().to_string());
-                new_rev = refs_on_line[1].get(2).unwrap().as_str().to_string();
-                new_date = refs_on_line[1].get(3).map(|m| m.as_str().to_string());
-            } else {
-                // Look at subsequent lines
-                for j in (i + 1)..std::cmp::min(i + 4, lines.len()) {
-                    let next_line = lines[j];
-                    if let Some(ref_caps) = ref_line.captures(next_line) {
-                        let rev = ref_caps.get(2).unwrap().as_str().to_string();
-                        let date = ref_caps.get(3).map(|m| m.as_str().to_string());
-
-                        if next_line.contains('→') || next_line.contains("->") {
-                            new_rev = rev;
-                            new_date = date;
-                        } else if old_rev.is_empty() {
-                            old_rev = rev;
-                            old_date = date;
-                        } else if new_rev.is_empty() {
-                            new_rev = rev;
-                            new_date = date;
-                        }
-                    }
-                }
-            }
-
-            if !old_rev.is_empty() && !new_rev.is_empty() && old_rev != new_rev {
-                updates.push(FlakeUpdate {
-                    input_name,
-                    old_rev,
-                    new_rev,
-                    old_date,
-                    new_date,
-                });
-            }
+        // Look for "these derivations will be built:" or "these paths will be fetched:"
+        if trimmed.contains("derivations will be built") || trimmed.contains("paths will be fetched") {
+            in_build_list = true;
+            continue;
         }
 
-        i += 1;
+        // End of list when we hit an empty line or different section
+        if in_build_list && (trimmed.is_empty() || (!trimmed.starts_with("/nix/store/") && !trimmed.starts_with("  "))) {
+            in_build_list = false;
+        }
+
+        // Parse derivation/store paths
+        if in_build_list && trimmed.starts_with("/nix/store/") {
+            // Extract package name from path like /nix/store/xxx-packagename-1.2.3.drv
+            if let Some(name) = extract_package_name(trimmed) {
+                // Avoid duplicates
+                if !updates.iter().any(|u: &FlakeUpdate| u.package_name == name) {
+                    updates.push(FlakeUpdate { package_name: name });
+                }
+            }
+        }
     }
 
     Ok(updates)
+}
+
+/// Extract package name from a nix store path
+/// /nix/store/hash-name-version.drv -> name-version
+/// /nix/store/hash-name-version -> name-version
+fn extract_package_name(path: &str) -> Option<String> {
+    // Remove /nix/store/ prefix and .drv suffix
+    let path = path.trim();
+    let name = path.strip_prefix("/nix/store/")?;
+    let name = name.strip_suffix(".drv").unwrap_or(name);
+
+    // Skip the hash (32 chars + dash)
+    if name.len() > 33 && name.chars().nth(32) == Some('-') {
+        Some(name[33..].to_string())
+    } else {
+        None
+    }
 }
 
 /// Generate a commit message from the list of updates
@@ -164,11 +302,10 @@ pub fn generate_commit_message(updates: &[FlakeUpdate]) -> String {
     }
 
     if updates.len() == 1 {
-        return format!("Update {}", updates[0].input_name);
+        return format!("Update {}", updates[0].package_name);
     }
 
-    let names: Vec<&str> = updates.iter().map(|u| u.input_name.as_str()).collect();
-    format!("Update {}", names.join(", "))
+    format!("Update {} packages", updates.len())
 }
 
 /// Format updates for tooltip display
@@ -178,14 +315,20 @@ pub fn format_updates_tooltip(updates: &[FlakeUpdate]) -> String {
     }
 
     let header = if updates.len() == 1 {
-        "1 update available:".to_string()
+        "1 package to update:".to_string()
     } else {
-        format!("{} updates available:", updates.len())
+        format!("{} packages to update:", updates.len())
     };
 
-    let details: Vec<String> = updates.iter().map(|u| u.display()).collect();
+    // Show first few packages, truncate if too many
+    let max_show = 10;
+    let details: Vec<String> = updates.iter().take(max_show).map(|u| u.display()).collect();
 
-    format!("{}\n{}", header, details.join("\n"))
+    if updates.len() > max_show {
+        format!("{}\n{}  ...and {} more", header, details.join("\n  "), updates.len() - max_show)
+    } else {
+        format!("{}\n  {}", header, details.join("\n  "))
+    }
 }
 
 #[cfg(test)]
@@ -193,44 +336,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_update_output() {
+    fn test_parse_dry_build_output() {
         let output = r#"
-warning: updating lock file '/home/user/nixos/flake.lock':
-• Updated input 'nixpkgs':
-    'github:NixOS/nixpkgs/abc1234567890' (2024-01-01)
-  → 'github:NixOS/nixpkgs/def4567890123' (2024-01-15)
-• Updated input 'home-manager':
-    'github:nix-community/home-manager/111222333' (2024-01-02)
-  → 'github:nix-community/home-manager/444555666' (2024-01-16)
+these 3 derivations will be built:
+  /nix/store/abcdefghijklmnopqrstuvwxyz012345-firefox-120.0.drv
+  /nix/store/abcdefghijklmnopqrstuvwxyz012345-chromium-119.0.drv
+  /nix/store/abcdefghijklmnopqrstuvwxyz012345-nodejs-20.10.0.drv
+these paths will be fetched (500 MiB):
+  /nix/store/abcdefghijklmnopqrstuvwxyz012345-glibc-2.38
 "#;
 
-        let updates = parse_flake_update_output(output).unwrap();
-        assert_eq!(updates.len(), 2);
-        assert_eq!(updates[0].input_name, "nixpkgs");
-        assert_eq!(updates[1].input_name, "home-manager");
+        let updates = parse_dry_build_output(output).unwrap();
+        assert_eq!(updates.len(), 4);
+        assert!(updates.iter().any(|u| u.package_name == "firefox-120.0"));
+        assert!(updates.iter().any(|u| u.package_name == "chromium-119.0"));
+        assert!(updates.iter().any(|u| u.package_name == "nodejs-20.10.0"));
+        assert!(updates.iter().any(|u| u.package_name == "glibc-2.38"));
+    }
+
+    #[test]
+    fn test_extract_package_name() {
+        assert_eq!(
+            extract_package_name("/nix/store/abcdefghijklmnopqrstuvwxyz012345-firefox-120.0.drv"),
+            Some("firefox-120.0".to_string())
+        );
+        assert_eq!(
+            extract_package_name("/nix/store/abcdefghijklmnopqrstuvwxyz012345-glibc-2.38"),
+            Some("glibc-2.38".to_string())
+        );
     }
 
     #[test]
     fn test_generate_commit_message() {
         let updates = vec![
-            FlakeUpdate {
-                input_name: "nixpkgs".to_string(),
-                old_rev: "abc".to_string(),
-                new_rev: "def".to_string(),
-                old_date: None,
-                new_date: None,
-            },
-            FlakeUpdate {
-                input_name: "home-manager".to_string(),
-                old_rev: "111".to_string(),
-                new_rev: "222".to_string(),
-                old_date: None,
-                new_date: None,
-            },
+            FlakeUpdate { package_name: "firefox-120.0".to_string() },
+            FlakeUpdate { package_name: "chromium-119.0".to_string() },
         ];
 
         let msg = generate_commit_message(&updates);
-        assert!(msg.contains("nixpkgs"));
-        assert!(msg.contains("home-manager"));
+        assert!(msg.contains("2 packages"));
     }
 }

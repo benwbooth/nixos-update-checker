@@ -3,5 +3,6 @@
     <qresource prefix="/">
         <file>icons/nix-flake.svg</file>
         <file>icons/nix-flake-update.svg</file>
+        <file>icons/nix-flake-checking.svg</file>
     </qresource>
 </RCC>
