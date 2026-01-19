@@ -22,21 +22,28 @@
           extensions = [ "rust-src" "rust-analyzer" ];
         };
 
+        # Create a proper Qt environment using qt6.env
+        # This creates a unified tree where qmake returns correct paths
+        qtEnv = pkgs.qt6.env "qt-env" [
+          pkgs.qt6.qtdeclarative
+          pkgs.qt6.qtsvg
+          pkgs.qt6.qtwayland
+          pkgs.qt6.qttools
+        ];
+
         nativeBuildInputs = with pkgs; [
           rustToolchain
           pkg-config
           cmake
           ninja
-          qt6.wrapQtAppsHook
-          qt6.qtdeclarative  # provides qmltyperegistrar
         ];
 
         buildInputs = with pkgs; [
           qt6.qtbase
           qt6.qtdeclarative
           qt6.qtwayland
-          qt6.qtsvg  # for SVG icon support
-          qt6.qttools  # for Qt.labs.platform
+          qt6.qtsvg
+          qt6.qttools
           libGL
         ];
 
@@ -47,50 +54,10 @@
           coreutils
         ];
 
-        # Create a combined Qt environment with all necessary tools
-        # qt-build-utils looks for tools relative to qmake, so we need to create
-        # a unified tree where qmake can find qmltyperegistrar
-        qtCombined = pkgs.symlinkJoin {
-          name = "qt6-combined";
-          paths = [
-            pkgs.qt6.qtbase
-            pkgs.qt6.qtdeclarative
-            pkgs.qt6.qtsvg
-            pkgs.qt6.qtwayland
-            pkgs.qt6.qttools
-          ];
-        };
-
-        # Qt libexec path containing qmltyperegistrar
-        qtLibexec = "${pkgs.qt6.qtdeclarative}/libexec";
-
-        # Create a wrapper qmake that reports correct paths for the combined Qt tree
-        qmakeWrapper = pkgs.writeShellScriptBin "qmake" ''
-          # If querying paths, return the combined tree paths
-          if [[ "$*" == *"-query"* ]]; then
-            case "$*" in
-              *QT_HOST_LIBEXECS*|*QT_INSTALL_LIBEXECS*)
-                echo "${qtCombined}/libexec"
-                exit 0
-                ;;
-              *QT_HOST_BINS*|*QT_INSTALL_BINS*)
-                echo "${qtCombined}/bin"
-                exit 0
-                ;;
-              *QT_HOST_PREFIX*|*QT_INSTALL_PREFIX*)
-                echo "${qtCombined}"
-                exit 0
-                ;;
-            esac
-          fi
-          # For other operations, delegate to real qmake
-          exec ${pkgs.qt6.qtbase}/bin/qmake "$@"
-        '';
-
-        # Create a wrapped cargo that has access to Qt tools and correct QMAKE
+        # Create a wrapped cargo that uses the qtEnv qmake
         cargoWrapped = pkgs.writeShellScriptBin "cargo" ''
-          export PATH="${qmakeWrapper}/bin:${qtCombined}/libexec:${qtLibexec}:$PATH"
-          export QMAKE="${qmakeWrapper}/bin/qmake"
+          export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
+          export QMAKE="${qtEnv}/bin/qmake"
           exec ${rustToolchain}/bin/cargo "$@"
         '';
       in
@@ -104,23 +71,47 @@
             lockFile = ./Cargo.lock;
           };
 
-          inherit nativeBuildInputs buildInputs;
+          nativeBuildInputs = nativeBuildInputs ++ [ pkgs.copyDesktopItems pkgs.qt6.wrapQtAppsHook ];
+          inherit buildInputs;
 
-          # Ensure Qt plugins are found at runtime
+          # Don't use cmake/ninja as the main build system - they're only needed for cxx-qt internally
+          dontUseCmakeConfigure = true;
+          dontUseNinjaBuild = true;
+          dontUseNinjaInstall = true;
+
+          # Qt environment for cxx-qt build - use qtEnv which has proper qmake paths
+          QMAKE = "${qtEnv}/bin/qmake";
+
+          preBuild = ''
+            # Override QMAKE that wrapQtAppsHook sets - we need our qtEnv qmake
+            export QMAKE="${qtEnv}/bin/qmake"
+            export PATH="${qtEnv}/libexec:$PATH"
+          '';
+
+          desktopItems = [
+            (pkgs.makeDesktopItem {
+              name = "nixos-update-checker";
+              exec = "nixos-update-checker";
+              icon = "nixos-update-checker";
+              desktopName = "NixOS Update Checker";
+              comment = "Monitor NixOS flake repository for updates";
+              categories = [ "System" "Monitor" ];
+              keywords = [ "nixos" "nix" "update" "flake" ];
+              startupNotify = false;
+              extraConfig = {
+                StartupWMClass = "nixos-update-checker";
+              };
+            })
+          ];
+
           postInstall = ''
             wrapProgram $out/bin/nixos-update-checker \
               --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
 
-            # Install desktop file
-            mkdir -p $out/share/applications
-            cp resources/nixos-update-checker.desktop $out/share/applications/
-
-            # Install icon
+            # Install icon to hicolor theme
             mkdir -p $out/share/icons/hicolor/scalable/apps
             cp resources/icons/nix-flake.svg $out/share/icons/hicolor/scalable/apps/nixos-update-checker.svg
           '';
-
-          QMAKE = "${pkgs.qt6.qtbase.dev}/bin/qmake";
 
           meta = with pkgs.lib; {
             description = "System tray app for monitoring NixOS flake updates";
@@ -142,15 +133,14 @@
           # Qt environment variables
           QT_QPA_PLATFORM = "wayland;xcb";
 
-          # Qt tool paths for cxx-qt build - use the combined Qt tree with wrapper qmake
-          QMAKE = "${qmakeWrapper}/bin/qmake";
-          QT_HOST_PATH = "${qtCombined}";
+          # Use qtEnv for proper qmake paths
+          QMAKE = "${qtEnv}/bin/qmake";
 
           shellHook = ''
             echo "NixOS Update Checker development environment"
             echo "Run 'cargo build' to build the project"
-            export PATH="${qmakeWrapper}/bin:${qtCombined}/libexec:${qtLibexec}:$PATH"
-            export QMAKE="${qmakeWrapper}/bin/qmake"
+            export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
+            export QMAKE="${qtEnv}/bin/qmake"
           '';
         };
 

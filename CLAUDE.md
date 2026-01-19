@@ -19,6 +19,11 @@ nix develop --command cargo run
 - `qml/` - QML UI files
 - `resources/` - Icons and desktop file
 
+## Workflow
+
+- **Always commit and push after implementing changes** - don't leave work uncommitted
+- Test with `nix build` before committing to ensure the package builds correctly
+
 ## Notes
 
 - Must run inside `nix develop` shell for Qt dependencies

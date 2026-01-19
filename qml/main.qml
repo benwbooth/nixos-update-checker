@@ -14,6 +14,15 @@ ApplicationWindow {
     flags: Qt.Dialog | Qt.WindowStaysOnTopHint
 
     property bool outputExpanded: false
+    property bool packageListExpanded: false
+
+    // Autosave function
+    function autosaveSettings() {
+        if (flakePathField.text.length > 0) {
+            var unit = unitCombo.model[unitCombo.currentIndex].value
+            checker.save_config(flakePathField.text, intervalSpinBox.value, unit)
+        }
+    }
 
     // The Rust backend
     UpdateChecker {
@@ -56,7 +65,17 @@ ApplicationWindow {
         }
 
         onConfig_saved: {
-            checkTimer.interval = checker.check_interval * 60 * 1000
+            // Calculate interval in milliseconds based on unit
+            var unit = checker.check_interval_unit
+            var minutes = checker.check_interval
+            if (unit === "days") {
+                minutes = checker.check_interval * 24 * 60
+            } else if (unit === "weeks") {
+                minutes = checker.check_interval * 7 * 24 * 60
+            } else {
+                minutes = checker.check_interval * 60
+            }
+            checkTimer.interval = minutes * 60 * 1000
         }
 
         onOutput_changed: {
@@ -103,6 +122,19 @@ ApplicationWindow {
         repeat: true
         running: checker.update_running
         onTriggered: checker.poll_update_result()
+    }
+
+    // Folder dialog for flake path selection
+    Platform.FolderDialog {
+        id: folderDialog
+        title: "Select Flake Directory"
+        folder: flakePathField.text ? "file://" + flakePathField.text : Platform.StandardPaths.writableLocation(Platform.StandardPaths.HomeLocation)
+        onAccepted: {
+            // Convert file:// URL to path
+            var path = folder.toString().replace("file://", "")
+            flakePathField.text = path
+            autosaveSettings()
+        }
     }
 
     // System tray icon
@@ -180,10 +212,21 @@ ApplicationWindow {
             Layout.fillWidth: true
 
             Label { text: "Flake Path:" }
-            TextField {
-                id: flakePathField
+            RowLayout {
                 Layout.fillWidth: true
-                placeholderText: "/etc/nixos"
+                spacing: 5
+
+                TextField {
+                    id: flakePathField
+                    Layout.fillWidth: true
+                    placeholderText: "/etc/nixos"
+                    onEditingFinished: autosaveSettings()
+                }
+
+                Button {
+                    text: "Browse..."
+                    onClicked: folderDialog.open()
+                }
             }
 
             Label { text: "Check Interval:" }
@@ -195,6 +238,7 @@ ApplicationWindow {
                     to: 99
                     value: 1
                     editable: true
+                    onValueModified: autosaveSettings()
                 }
                 ComboBox {
                     id: unitCombo
@@ -205,6 +249,7 @@ ApplicationWindow {
                     ]
                     textRole: "text"
                     currentIndex: 0
+                    onActivated: autosaveSettings()
                 }
             }
         }
@@ -227,12 +272,61 @@ ApplicationWindow {
                     color: checker.status_message && checker.status_message.startsWith("Error") ? "red" : palette.text
                 }
 
-                Label {
-                    text: checker.has_updates
-                        ? checker.update_count + " update(s) available"
-                        : "No updates available"
-                    font.bold: checker.has_updates
-                    color: checker.has_updates ? "#2196F3" : palette.text
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 5
+
+                    Button {
+                        text: packageListExpanded ? "▼" : "▶"
+                        flat: true
+                        implicitWidth: 30
+                        visible: checker.has_updates
+                        onClicked: packageListExpanded = !packageListExpanded
+                    }
+
+                    Label {
+                        text: checker.has_updates
+                            ? checker.update_count + " package(s) to update"
+                            : "No updates available"
+                        font.bold: checker.has_updates
+                        color: checker.has_updates ? "#2196F3" : palette.text
+                    }
+                }
+
+                // Expandable package list
+                ScrollView {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 150
+                    visible: packageListExpanded && checker.has_updates
+
+                    ListView {
+                        id: packageListView
+                        clip: true
+                        model: {
+                            try {
+                                return checker.updates_json ? JSON.parse(checker.updates_json) : []
+                            } catch (e) {
+                                return []
+                            }
+                        }
+                        delegate: Label {
+                            text: {
+                                var name = modelData.package_name
+                                var oldHash = modelData.old_hash_short || ""
+                                var newHash = modelData.hash_short || ""
+                                if (oldHash && newHash) {
+                                    return "• " + name + " (" + oldHash + " → " + newHash + ")"
+                                } else if (newHash) {
+                                    return "• " + name + " (new: " + newHash + ")"
+                                } else {
+                                    return "• " + name
+                                }
+                            }
+                            font.family: "monospace"
+                            padding: 2
+                            width: packageListView.width
+                        }
+                    }
                 }
             }
         }
@@ -250,19 +344,21 @@ ApplicationWindow {
                 // Status line (always visible)
                 RowLayout {
                     Layout.fillWidth: true
+                    spacing: 5
+
+                    Button {
+                        text: outputExpanded ? "▼" : "▶"
+                        flat: true
+                        implicitWidth: 30
+                        onClicked: outputExpanded = !outputExpanded
+                    }
 
                     Label {
-                        text: checker.update_status_line || "No output"
+                        text: checker.update_status_line || ""
                         elide: Text.ElideRight
                         Layout.fillWidth: true
                         font.family: "monospace"
                         color: checker.update_running ? "#2196F3" : palette.text
-                    }
-
-                    Button {
-                        text: outputExpanded ? "▼ Collapse" : "▶ Expand"
-                        flat: true
-                        onClicked: outputExpanded = !outputExpanded
                     }
                 }
 
@@ -307,14 +403,6 @@ ApplicationWindow {
             }
 
             Item { Layout.fillWidth: true }
-
-            Button {
-                text: "Save"
-                onClicked: {
-                    var unit = unitCombo.model[unitCombo.currentIndex].value
-                    checker.save_config(flakePathField.text, intervalSpinBox.value, unit)
-                }
-            }
 
             Button {
                 text: "Close"

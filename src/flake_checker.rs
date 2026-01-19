@@ -20,12 +20,40 @@ pub enum FlakeCheckError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlakeUpdate {
     pub package_name: String,
+    /// First 8 chars of the NEW nix store hash
+    #[serde(default)]
+    pub hash_short: String,
+    /// First 8 chars of the OLD (currently installed) nix store hash
+    #[serde(default)]
+    pub old_hash_short: String,
 }
 
 impl FlakeUpdate {
     /// Format the update for display in tooltip
     pub fn display(&self) -> String {
-        self.package_name.clone()
+        if !self.old_hash_short.is_empty() && !self.hash_short.is_empty() {
+            format!("{} ({} → {})", self.package_name, self.old_hash_short, self.hash_short)
+        } else if !self.hash_short.is_empty() {
+            format!("{} (new: {})", self.package_name, self.hash_short)
+        } else {
+            self.package_name.clone()
+        }
+    }
+
+    /// Get the base name without version (for deduplication)
+    pub fn base_name(&self) -> &str {
+        // Try to find where the version starts (usually after last dash followed by digit)
+        let name = &self.package_name;
+
+        // Find the last segment that looks like a version
+        if let Some(pos) = name.rfind('-') {
+            let after = &name[pos + 1..];
+            // Check if it starts with a digit (version number)
+            if after.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                return &name[..pos];
+            }
+        }
+        name
     }
 }
 
@@ -233,8 +261,13 @@ pub async fn check_for_updates(flake_path: &Path) -> Result<Vec<FlakeUpdate>, Fl
         )));
     }
 
+    // Get current system packages to compare hashes
+    eprintln!("Getting current system packages for comparison...");
+    let current_packages = get_current_system_packages().await;
+    eprintln!("Found {} current packages", current_packages.len());
+
     // Parse the output for packages that would be built
-    parse_dry_build_output(&combined)
+    parse_dry_build_output(&combined, &current_packages)
 }
 
 /// Get the system hostname
@@ -244,9 +277,48 @@ fn gethostname() -> String {
         .unwrap_or_else(|_| "nixos".to_string())
 }
 
+/// Get a map of package base names to their current hash (from current system)
+async fn get_current_system_packages() -> std::collections::HashMap<String, String> {
+    let mut packages: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+
+    // Query the current system closure
+    let output = Command::new("nix-store")
+        .args(["-qR", "/run/current-system"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await;
+
+    if let Ok(output) = output {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some((name, hash)) = extract_package_info(line.trim()) {
+                // Use base name for matching
+                let update = FlakeUpdate {
+                    package_name: name.clone(),
+                    hash_short: String::new(),
+                    old_hash_short: String::new(),
+                };
+                let base = update.base_name().to_string();
+                // Keep the one with version if there's a conflict
+                let should_insert = match packages.get(&base) {
+                    None => true,
+                    Some((existing_name, _)) => name.len() > existing_name.len(),
+                };
+                if should_insert {
+                    packages.insert(base, (name, hash));
+                }
+            }
+        }
+    }
+
+    // Convert to just base_name -> hash
+    packages.into_iter().map(|(k, (_, h))| (k, h)).collect()
+}
+
 /// Parse the output of `nixos-rebuild dry-build` to extract packages
-fn parse_dry_build_output(output: &str) -> Result<Vec<FlakeUpdate>, FlakeCheckError> {
-    let mut updates = Vec::new();
+fn parse_dry_build_output(output: &str, current_packages: &std::collections::HashMap<String, String>) -> Result<Vec<FlakeUpdate>, FlakeCheckError> {
+    let mut updates: Vec<FlakeUpdate> = Vec::new();
     let mut in_build_list = false;
 
     for line in output.lines() {
@@ -265,11 +337,43 @@ fn parse_dry_build_output(output: &str) -> Result<Vec<FlakeUpdate>, FlakeCheckEr
 
         // Parse derivation/store paths
         if in_build_list && trimmed.starts_with("/nix/store/") {
-            // Extract package name from path like /nix/store/xxx-packagename-1.2.3.drv
-            if let Some(name) = extract_package_name(trimmed) {
-                // Avoid duplicates
-                if !updates.iter().any(|u: &FlakeUpdate| u.package_name == name) {
-                    updates.push(FlakeUpdate { package_name: name });
+            // Extract package info from path like /nix/store/xxx-packagename-1.2.3.drv
+            if let Some((name, hash)) = extract_package_info(trimmed) {
+                // Look up old hash from current system
+                let temp_update = FlakeUpdate {
+                    package_name: name.clone(),
+                    hash_short: String::new(),
+                    old_hash_short: String::new(),
+                };
+                let base_name = temp_update.base_name();
+                let old_hash = current_packages.get(base_name).cloned().unwrap_or_default();
+
+                let new_update = FlakeUpdate {
+                    package_name: name.clone(),
+                    hash_short: hash,
+                    old_hash_short: old_hash,
+                };
+
+                // Check for duplicates - prefer version with version number
+                let dominated = updates.iter().any(|existing| {
+                    // If existing has a version and new one doesn't, existing dominates
+                    existing.base_name() == new_update.base_name()
+                        && existing.package_name.len() > new_update.package_name.len()
+                });
+
+                if dominated {
+                    continue;
+                }
+
+                // Remove any existing entry that the new one dominates
+                updates.retain(|existing| {
+                    !(existing.base_name() == new_update.base_name()
+                        && existing.package_name.len() < new_update.package_name.len())
+                });
+
+                // Avoid exact duplicates
+                if !updates.iter().any(|u| u.package_name == name) {
+                    updates.push(new_update);
                 }
             }
         }
@@ -278,10 +382,61 @@ fn parse_dry_build_output(output: &str) -> Result<Vec<FlakeUpdate>, FlakeCheckEr
     Ok(updates)
 }
 
-/// Extract package name from a nix store path
-/// /nix/store/hash-name-version.drv -> name-version
-/// /nix/store/hash-name-version -> name-version
-fn extract_package_name(path: &str) -> Option<String> {
+/// Check if a package name is an internal/system package that should be filtered out
+fn is_internal_package(name: &str) -> bool {
+    // Exact matches
+    let exact_matches = [
+        "system-path",
+        "user-units",
+        "dbus-1",
+        "unit",
+        "etc",
+    ];
+
+    // Prefix matches
+    let prefix_matches = [
+        "X-Restart-Triggers",
+        "unit-",
+        "etc-",
+        "system-units",
+        "nixos-system-",
+    ];
+
+    // Suffix matches
+    let suffix_matches = [
+        ".service",
+        ".socket",
+        ".timer",
+        ".target",
+        ".mount",
+    ];
+
+    // Check exact matches
+    if exact_matches.contains(&name) {
+        return true;
+    }
+
+    // Check prefix matches
+    for prefix in &prefix_matches {
+        if name.starts_with(prefix) {
+            return true;
+        }
+    }
+
+    // Check suffix matches (systemd units)
+    for suffix in &suffix_matches {
+        if name.ends_with(suffix) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Extract package info from a nix store path
+/// /nix/store/hash-name-version.drv -> (name-version, hash_short)
+/// /nix/store/hash-name-version -> (name-version, hash_short)
+fn extract_package_info(path: &str) -> Option<(String, String)> {
     // Remove /nix/store/ prefix and .drv suffix
     let path = path.trim();
     let name = path.strip_prefix("/nix/store/")?;
@@ -289,7 +444,15 @@ fn extract_package_name(path: &str) -> Option<String> {
 
     // Skip the hash (32 chars + dash)
     if name.len() > 33 && name.chars().nth(32) == Some('-') {
-        Some(name[33..].to_string())
+        let hash_short = name[..8].to_string();
+        let package_name = name[33..].to_string();
+
+        // Filter out internal/system packages
+        if is_internal_package(&package_name) {
+            return None;
+        }
+
+        Some((package_name, hash_short))
     } else {
         None
     }
@@ -336,6 +499,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_is_internal_package() {
+        // Should be filtered
+        assert!(is_internal_package("system-path"));
+        assert!(is_internal_package("user-units"));
+        assert!(is_internal_package("dbus-1"));
+        assert!(is_internal_package("X-Restart-Triggers"));
+        assert!(is_internal_package("X-Restart-Triggers-Dbus"));
+        assert!(is_internal_package("X-Restart-Triggers-polkit"));
+        assert!(is_internal_package("unit-dbus.service"));
+        assert!(is_internal_package("unit-polkit.service"));
+        assert!(is_internal_package("etc-hosts"));
+        assert!(is_internal_package("etc"));
+        assert!(is_internal_package("nixos-system-nixos-25.11.20260117.72ac591"));
+
+        // Should NOT be filtered
+        assert!(!is_internal_package("firefox-120.0"));
+        assert!(!is_internal_package("chromium-119.0"));
+        assert!(!is_internal_package("nodejs-20.10.0"));
+        assert!(!is_internal_package("glibc-2.38"));
+        assert!(!is_internal_package("whisper-typer-0.1.0"));
+    }
+
+    #[test]
     fn test_parse_dry_build_output() {
         let output = r#"
 these 3 derivations will be built:
@@ -345,8 +531,8 @@ these 3 derivations will be built:
 these paths will be fetched (500 MiB):
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-glibc-2.38
 "#;
-
-        let updates = parse_dry_build_output(output).unwrap();
+        let current = std::collections::HashMap::new();
+        let updates = parse_dry_build_output(output, &current).unwrap();
         assert_eq!(updates.len(), 4);
         assert!(updates.iter().any(|u| u.package_name == "firefox-120.0"));
         assert!(updates.iter().any(|u| u.package_name == "chromium-119.0"));
@@ -355,22 +541,91 @@ these paths will be fetched (500 MiB):
     }
 
     #[test]
-    fn test_extract_package_name() {
+    fn test_parse_dry_build_output_filters_internal() {
+        let output = r#"
+these derivations will be built:
+  /nix/store/abcdefghijklmnopqrstuvwxyz012345-firefox-120.0.drv
+  /nix/store/abcdefghijklmnopqrstuvwxyz012345-system-path.drv
+  /nix/store/abcdefghijklmnopqrstuvwxyz012345-X-Restart-Triggers-Dbus.drv
+  /nix/store/abcdefghijklmnopqrstuvwxyz012345-unit-dbus.service.drv
+  /nix/store/abcdefghijklmnopqrstuvwxyz012345-chromium-119.0.drv
+"#;
+        let current = std::collections::HashMap::new();
+        let updates = parse_dry_build_output(output, &current).unwrap();
+        // Should only have firefox and chromium, not the internal packages
+        assert_eq!(updates.len(), 2);
+        assert!(updates.iter().any(|u| u.package_name == "firefox-120.0"));
+        assert!(updates.iter().any(|u| u.package_name == "chromium-119.0"));
+    }
+
+    #[test]
+    fn test_extract_package_info() {
+        let result = extract_package_info("/nix/store/abcdefghijklmnopqrstuvwxyz012345-firefox-120.0.drv");
+        assert_eq!(result, Some(("firefox-120.0".to_string(), "abcdefgh".to_string())));
+
+        let result = extract_package_info("/nix/store/abcdefghijklmnopqrstuvwxyz012345-glibc-2.38");
+        assert_eq!(result, Some(("glibc-2.38".to_string(), "abcdefgh".to_string())));
+
+        // Internal packages should return None
         assert_eq!(
-            extract_package_name("/nix/store/abcdefghijklmnopqrstuvwxyz012345-firefox-120.0.drv"),
-            Some("firefox-120.0".to_string())
+            extract_package_info("/nix/store/abcdefghijklmnopqrstuvwxyz012345-system-path.drv"),
+            None
         );
-        assert_eq!(
-            extract_package_name("/nix/store/abcdefghijklmnopqrstuvwxyz012345-glibc-2.38"),
-            Some("glibc-2.38".to_string())
-        );
+    }
+
+    #[test]
+    fn test_base_name() {
+        let update = FlakeUpdate {
+            package_name: "whisper-typer-0.1.0".to_string(),
+            hash_short: "abcd1234".to_string(),
+            old_hash_short: String::new(),
+        };
+        assert_eq!(update.base_name(), "whisper-typer");
+
+        let update = FlakeUpdate {
+            package_name: "whisper-typer".to_string(),
+            hash_short: "abcd1234".to_string(),
+            old_hash_short: String::new(),
+        };
+        assert_eq!(update.base_name(), "whisper-typer");
+    }
+
+    #[test]
+    fn test_deduplication() {
+        let output = r#"
+these derivations will be built:
+  /nix/store/abcdefghijklmnopqrstuvwxyz012345-whisper-typer-0.1.0.drv
+  /nix/store/xyzdefghijklmnopqrstuvwxyz012345-whisper-typer.drv
+"#;
+        let current = std::collections::HashMap::new();
+        let updates = parse_dry_build_output(output, &current).unwrap();
+        // Should only have one entry, preferring the one with version
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].package_name, "whisper-typer-0.1.0");
+    }
+
+    #[test]
+    fn test_old_hash_lookup() {
+        // Hash must be exactly 32 characters: newhashabcdefghijklmnopqrstuvwxy
+        let output = r#"
+these derivations will be built:
+  /nix/store/newhashabcdefghijklmnopqrstuvwxy-firefox-120.0.drv
+"#;
+        let mut current = std::collections::HashMap::new();
+        current.insert("firefox".to_string(), "oldhas12".to_string());
+
+        let updates = parse_dry_build_output(output, &current).unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].package_name, "firefox-120.0");
+        assert_eq!(updates[0].hash_short, "newhasha");
+        assert_eq!(updates[0].old_hash_short, "oldhas12");
     }
 
     #[test]
     fn test_generate_commit_message() {
         let updates = vec![
-            FlakeUpdate { package_name: "firefox-120.0".to_string() },
-            FlakeUpdate { package_name: "chromium-119.0".to_string() },
+            FlakeUpdate { package_name: "firefox-120.0".to_string(), hash_short: "abcd1234".to_string(), old_hash_short: String::new() },
+            FlakeUpdate { package_name: "chromium-119.0".to_string(), hash_short: "efgh5678".to_string(), old_hash_short: String::new() },
         ];
 
         let msg = generate_commit_message(&updates);
