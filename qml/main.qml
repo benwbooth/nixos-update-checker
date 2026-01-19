@@ -9,8 +9,11 @@ import Terminal 1.0
 ApplicationWindow {
     id: root
     visible: false  // Start hidden - show via tray menu
-    width: 1000
-    height: outputExpanded ? 1200 : 770
+    // Fixed width, height adjusts for terminal
+    width: 975
+    height: outputExpanded ? 750 : 450
+    minimumWidth: 900
+    minimumHeight: 400
     title: "NixOS Update Checker"
     flags: Qt.Dialog | Qt.WindowStaysOnTopHint
 
@@ -181,9 +184,10 @@ ApplicationWindow {
 
     // Main content
     ColumnLayout {
+        id: mainContent
         anchors.fill: parent
-        anchors.margins: 20
-        spacing: 15
+        anchors.margins: 15
+        spacing: 10
 
         Label {
             text: "NixOS Update Checker"
@@ -273,10 +277,15 @@ ApplicationWindow {
                     }
 
                     Label {
+                        text: "Updates"
+                        font.bold: true
+                        visible: checker.has_updates
+                    }
+
+                    Label {
                         text: checker.has_updates
-                            ? checker.update_count + " package(s) to update"
+                            ? checker.update_count + " package(s) available"
                             : "No updates available"
-                        font.bold: checker.has_updates
                         color: checker.has_updates ? "#2196F3" : palette.text
                     }
                 }
@@ -284,7 +293,7 @@ ApplicationWindow {
                 // Expandable package list
                 ScrollView {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 150
+                    Layout.preferredHeight: 120
                     visible: packageListExpanded && checker.has_updates
 
                     ListView {
@@ -320,51 +329,52 @@ ApplicationWindow {
         }
 
         // Output panel with embedded terminal
-        GroupBox {
-            title: "Update Output"
+        ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: outputExpanded
+            spacing: 5
 
-            ColumnLayout {
-                anchors.fill: parent
+            // Header row with expand button and title
+            RowLayout {
+                Layout.fillWidth: true
                 spacing: 5
 
-                // Status line (always visible)
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 5
-
-                    Button {
-                        text: outputExpanded ? "▼" : "▶"
-                        flat: true
-                        implicitWidth: 30
-                        onClicked: outputExpanded = !outputExpanded
-                    }
-
-                    Label {
-                        text: terminal.running ? "Running update..." : (checker.update_status_line || "")
-                        elide: Text.ElideRight
-                        Layout.fillWidth: true
-                        font.family: "monospace"
-                        color: terminal.running ? "#2196F3" : palette.text
-                    }
+                Button {
+                    text: outputExpanded ? "▼" : "▶"
+                    flat: true
+                    implicitWidth: 30
+                    onClicked: outputExpanded = !outputExpanded
                 }
 
-                // Embedded terminal using WindowContainer
-                WindowContainer {
-                    id: terminalContainer
-                    window: terminal.window
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.minimumHeight: 400
-                    visible: outputExpanded
+                Label {
+                    text: "Update Output"
+                    font.bold: true
+                }
 
-                    // Dark background for terminal area
-                    Rectangle {
-                        anchors.fill: parent
-                        color: "#1e1e1e"
-                        z: -1
-                    }
+                Label {
+                    text: terminal.running ? "Running update..." : (checker.update_status_line || "")
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                    font.family: "monospace"
+                    color: terminal.running ? "#2196F3" : palette.text
+                }
+            }
+
+            // Embedded terminal using WindowContainer
+            WindowContainer {
+                id: terminalContainer
+                window: terminal.window
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumHeight: 300
+                Layout.preferredHeight: 350
+                visible: outputExpanded
+
+                // Dark background for terminal area
+                Rectangle {
+                    anchors.fill: parent
+                    color: "#1e1e1e"
+                    z: -1
                 }
             }
         }
