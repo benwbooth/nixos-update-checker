@@ -134,7 +134,7 @@
           inherit nativeBuildInputs;
 
           # Put wrapped cargo first so it takes precedence, then the rest
-          packages = [ cargoWrapped ] ++ runtimeDeps ++ [ pkgs.rust-analyzer rustToolchain ];
+          packages = [ cargoWrapped ] ++ runtimeDeps ++ [ pkgs.rust-analyzer rustToolchain pkgs.cargo-watch ];
 
           inherit buildInputs;
 
