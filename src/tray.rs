@@ -68,6 +68,10 @@ pub mod qobject {
         /// Clear the update output
         #[qinvokable]
         fn clear_output(self: Pin<&mut UpdateChecker>);
+
+        /// Check if system was updated externally and clear updates if so
+        #[qinvokable]
+        fn check_system_changed(self: Pin<&mut UpdateChecker>);
     }
 
     unsafe extern "RustQt" {
@@ -175,6 +179,9 @@ type CheckResult = Result<Vec<FlakeUpdate>, flake_checker::FlakeCheckError>;
 
 /// Global storage for background check result
 static CHECK_RESULT: Lazy<Arc<Mutex<Option<CheckResult>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
+
+/// Cache the last known system path to detect external updates
+static CACHED_SYSTEM_PATH: Lazy<Arc<Mutex<String>>> = Lazy::new(|| Arc::new(Mutex::new(String::new())));
 
 impl qobject::UpdateChecker {
     /// Perform an update check (async - spawns background thread)
@@ -395,6 +402,36 @@ impl qobject::UpdateChecker {
         self.as_mut().set_update_output(QString::from(""));
         self.as_mut().set_update_status_line(QString::from(""));
         self.as_mut().output_changed();
+    }
+
+    /// Check if system was updated externally - if so, trigger a full recheck
+    pub fn check_system_changed(mut self: Pin<&mut Self>) {
+        let current_system = std::fs::read_link("/run/current-system")
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let mut cached = match CACHED_SYSTEM_PATH.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        if cached.is_empty() {
+            // First check - just cache the current value
+            *cached = current_system;
+            return;
+        }
+
+        if current_system != *cached {
+            // System changed - update cache and trigger full recheck
+            *cached = current_system;
+            drop(cached); // Release lock before calling check_now
+
+            // Only recheck if we were showing updates (optimization)
+            if *self.as_ref().has_updates() {
+                self.as_mut().set_status_message(QString::from("System changed, rechecking..."));
+                self.as_mut().check_now();
+            }
+        }
     }
 }
 

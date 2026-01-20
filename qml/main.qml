@@ -109,6 +109,15 @@ ApplicationWindow {
         onTriggered: checker.poll_check_result()
     }
 
+    // Timer to detect external system updates (every 30 seconds)
+    // If system changed and we had updates showing, triggers a full recheck
+    Timer {
+        id: systemChangeTimer
+        interval: 30 * 1000
+        repeat: true
+        running: true
+        onTriggered: checker.check_system_changed()
+    }
 
     // Folder dialog for flake path selection
     Platform.FolderDialog {
