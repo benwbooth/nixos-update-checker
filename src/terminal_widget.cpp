@@ -5,6 +5,7 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 
 TerminalWidget::TerminalWidget(QObject *parent)
     : QObject(parent)
@@ -24,6 +25,7 @@ TerminalWidget::TerminalWidget(QObject *parent)
 
     // Connect signals
     connect(m_terminal, &QTermWidget::finished, this, &TerminalWidget::onFinished);
+    connect(m_terminal, &QTermWidget::activity, this, &TerminalWidget::onDataReceived);
 
     // Force native window creation
     m_terminal->setAttribute(Qt::WA_NativeWindow);
@@ -80,9 +82,10 @@ void TerminalWidget::runScript(const QString &flakePath, const QString &commitMs
     QString sshAuthSock = qEnvironmentVariable("SSH_AUTH_SOCK");
 
     // Run pkexec with env to pass variables (including SSH_AUTH_SOCK for git push)
+    // Script handles "Press Enter to close" and final status message
     m_terminal->setShellProgram("/bin/sh");
     m_terminal->setArgs({"-c",
-        QString("pkexec env FLAKE_PATH='%1' COMMIT_MSG='%2' SSH_AUTH_SOCK='%3' '%4'; echo ''; echo '=== Press Enter to close ===' && read")
+        QString("pkexec env FLAKE_PATH='%1' COMMIT_MSG='%2' SSH_AUTH_SOCK='%3' '%4'")
             .arg(flakePath)
             .arg(commitMsg)
             .arg(sshAuthSock)
@@ -113,6 +116,36 @@ void TerminalWidget::onFinished() {
     m_running = false;
     emit runningChanged();
     emit finished(0);
+}
+
+void TerminalWidget::onDataReceived() {
+    if (!m_terminal || !m_running) return;
+
+    // Get the last non-empty line from the terminal screen
+    // Use setSelectionStart/End to select all text, then get selectedText
+    int totalLines = m_terminal->screenLinesCount() + m_terminal->historyLinesCount();
+    int totalCols = m_terminal->screenColumnsCount();
+
+    m_terminal->setSelectionStart(0, 0);
+    m_terminal->setSelectionEnd(totalLines, totalCols);
+    QString allText = m_terminal->selectedText();
+    // Clear selection by setting start after end
+    m_terminal->setSelectionStart(0, 0);
+    m_terminal->setSelectionEnd(0, 0);
+
+    if (!allText.isEmpty()) {
+        // Split into lines and find the last non-empty line
+        QStringList lines = allText.split('\n', Qt::SkipEmptyParts);
+        if (!lines.isEmpty()) {
+            QString lastLine = lines.last().trimmed();
+            // Filter out ANSI escape sequences for display
+            lastLine.remove(QRegularExpression("\x1b\\[[0-9;]*m"));
+            if (!lastLine.isEmpty() && lastLine != m_lastLine) {
+                m_lastLine = lastLine;
+                emit lastLineChanged();
+            }
+        }
+    }
 }
 
 // Register the type with QML - use C linkage so Rust can call it

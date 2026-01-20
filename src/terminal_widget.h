@@ -10,6 +10,7 @@ class TerminalWidget : public QObject {
     Q_OBJECT
     Q_PROPERTY(QWindow* window READ window NOTIFY windowReady)
     Q_PROPERTY(bool running READ running NOTIFY runningChanged)
+    Q_PROPERTY(QString lastLine READ lastLine NOTIFY lastLineChanged)
 
 public:
     explicit TerminalWidget(QObject *parent = nullptr);
@@ -17,6 +18,7 @@ public:
 
     QWindow* window() const;
     bool running() const { return m_running; }
+    QString lastLine() const { return m_lastLine; }
 
     Q_INVOKABLE void runCommand(const QString &command);
     Q_INVOKABLE void runScript(const QString &flakePath, const QString &commitMsg);
@@ -28,14 +30,17 @@ signals:
     void finished(int exitCode);
     void windowReady();
     void runningChanged();
+    void lastLineChanged();
     void outputReceived(const QString &text);
 
 private slots:
     void onFinished();
+    void onDataReceived();
 
 private:
     QTermWidget *m_terminal;
     bool m_running;
+    QString m_lastLine;
 };
 
 // Registration function to be called from Rust (C linkage)

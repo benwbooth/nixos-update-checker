@@ -401,7 +401,7 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: terminal.running ? "Running update..." : (checker.update_status_line || "")
+                    text: terminal.running ? (terminal.lastLine || "Running update...") : (checker.update_status_line || "")
                     elide: Text.ElideRight
                     Layout.fillWidth: true
                     font.family: "monospace"

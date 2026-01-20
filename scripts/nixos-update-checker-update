@@ -3,13 +3,14 @@
 # This script is called by the GUI with pkexec to perform the actual update
 # Expects FLAKE_PATH and COMMIT_MSG environment variables
 
-set -e
-
 if [ -z "$FLAKE_PATH" ]; then
     echo "Error: FLAKE_PATH environment variable not set"
     echo "This script should be called from the NixOS Update Checker GUI."
     exit 1
 fi
+
+# Track if any step fails
+FAILED=0
 
 # ANSI color codes
 BOLD=$'\033[1m'
@@ -34,11 +35,17 @@ echo ""
 git config --global --add safe.directory "$FLAKE_PATH"
 
 echo "${BOLD}${YELLOW}━━━ Updating flake inputs ━━━${NC}"
-NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update --verbose --log-format bar-with-logs
+if ! NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update --verbose --log-format bar-with-logs; then
+    echo "${RED}Failed to update flake inputs${NC}"
+    FAILED=1
+fi
 echo ""
 
 echo "${BOLD}${MAGENTA}━━━ Rebuilding NixOS ━━━${NC}"
-nixos-rebuild switch --flake . --verbose --log-format bar-with-logs
+if ! nixos-rebuild switch --flake . --verbose --log-format bar-with-logs; then
+    echo "${RED}Failed to rebuild NixOS${NC}"
+    FAILED=1
+fi
 echo ""
 
 echo "${BOLD}${BLUE}━━━ Committing changes ━━━${NC}"
@@ -59,4 +66,17 @@ else
 fi
 echo ""
 
-echo "${BOLD}${GREEN}✓ Update complete!${NC}"
+# Press enter message before final status
+echo ""
+echo "=== Press Enter to close ==="
+
+# Final status - this will be the status line
+if [ "$FAILED" -eq 1 ]; then
+    echo "${BOLD}${RED}✗ Update failed${NC}"
+    read
+    exit 1
+else
+    echo "${BOLD}${GREEN}✓ Update complete!${NC}"
+    read
+    exit 0
+fi
