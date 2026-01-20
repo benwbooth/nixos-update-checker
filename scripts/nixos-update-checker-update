@@ -34,11 +34,11 @@ echo ""
 git config --global --add safe.directory "$FLAKE_PATH"
 
 echo "${BOLD}${YELLOW}━━━ Updating flake inputs ━━━${NC}"
-NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update --log-format bar-with-logs
+NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update --verbose --log-format bar-with-logs
 echo ""
 
 echo "${BOLD}${MAGENTA}━━━ Rebuilding NixOS ━━━${NC}"
-nixos-rebuild switch --flake . --log-format bar-with-logs
+nixos-rebuild switch --flake . --verbose --log-format bar-with-logs
 echo ""
 
 echo "${BOLD}${BLUE}━━━ Committing changes ━━━${NC}"
