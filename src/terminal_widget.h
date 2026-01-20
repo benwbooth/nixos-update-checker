@@ -19,7 +19,7 @@ public:
     bool running() const { return m_running; }
 
     Q_INVOKABLE void runCommand(const QString &command);
-    Q_INVOKABLE void runScript(const QString &scriptPath);
+    Q_INVOKABLE void runScript(const QString &flakePath, const QString &commitMsg);
     Q_INVOKABLE void clear();
     Q_INVOKABLE void show();
     Q_INVOKABLE void hide();

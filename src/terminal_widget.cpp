@@ -2,6 +2,9 @@
 #include <QQmlEngine>
 #include <QProcess>
 #include <QDebug>
+#include <QCoreApplication>
+#include <QFile>
+#include <QFileInfo>
 
 TerminalWidget::TerminalWidget(QObject *parent)
     : QObject(parent)
@@ -55,18 +58,37 @@ void TerminalWidget::runCommand(const QString &command) {
     m_terminal->sendText(command + "\n");
 }
 
-void TerminalWidget::runScript(const QString &scriptPath) {
+void TerminalWidget::runScript(const QString &flakePath, const QString &commitMsg) {
     if (!m_terminal) return;
 
     m_running = true;
     emit runningChanged();
 
-    // Run the script with pkexec for sudo privileges
-    QString command = QString("pkexec bash '%1'; echo '\\n=== Press Enter to close ===' && read").arg(scriptPath);
+    // Set SHELL env var for pkexec security check
+    QStringList env = QProcess::systemEnvironment();
+    env << "SHELL=/bin/sh";
+    m_terminal->setEnvironment(env);
 
-    // Start bash with the command
+    // Find the script - check dev location first, then installed location
+    QString scriptPath = "/run/current-system/sw/bin/nixos-update-checker-update";
+    QString devScriptPath = QCoreApplication::applicationDirPath() + "/../../scripts/nixos-update-checker-update";
+    if (QFile::exists(devScriptPath)) {
+        scriptPath = QFileInfo(devScriptPath).canonicalFilePath();
+    }
+
+    // Get SSH_AUTH_SOCK to pass through for git push
+    QString sshAuthSock = qEnvironmentVariable("SSH_AUTH_SOCK");
+
+    // Run pkexec with env to pass variables (including SSH_AUTH_SOCK for git push)
+    m_terminal->setShellProgram("/bin/sh");
+    m_terminal->setArgs({"-c",
+        QString("pkexec env FLAKE_PATH='%1' COMMIT_MSG='%2' SSH_AUTH_SOCK='%3' '%4'; echo ''; echo '=== Press Enter to close ===' && read")
+            .arg(flakePath)
+            .arg(commitMsg)
+            .arg(sshAuthSock)
+            .arg(scriptPath)
+    });
     m_terminal->startShellProgram();
-    m_terminal->sendText(command + "\n");
 }
 
 void TerminalWidget::clear() {

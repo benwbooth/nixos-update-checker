@@ -37,10 +37,13 @@ pub mod qobject {
         #[qinvokable]
         fn poll_check_result(self: Pin<&mut UpdateChecker>);
 
-        /// Get the path to the update script (generates it if needed)
-        /// Returns the script path that can be run in the embedded terminal
+        /// Get the flake path for the update script
         #[qinvokable]
         fn get_update_script_path(self: Pin<&mut UpdateChecker>) -> QString;
+
+        /// Get the commit message for the update
+        #[qinvokable]
+        fn get_update_commit_message(self: Pin<&mut UpdateChecker>) -> QString;
 
         /// Save configuration
         #[qinvokable]
@@ -267,11 +270,8 @@ impl qobject::UpdateChecker {
                 }
             }
 
-            // Update last check time (display)
-            let now = chrono::Local::now();
-            self.as_mut().set_last_check_time(QString::from(
-                &now.format("%Y-%m-%d %H:%M:%S").to_string(),
-            ));
+            // Update last check time (display) - use relative time
+            self.as_mut().set_last_check_time(QString::from("just now"));
 
             self.as_mut().set_checking(false);
             self.as_mut().check_status_changed();
@@ -279,42 +279,18 @@ impl qobject::UpdateChecker {
         }
     }
 
-    /// Generate the update script and return its path
-    /// This is called by QML to get the script path for the embedded terminal
+    /// Get the flake path for the update script
     pub fn get_update_script_path(self: Pin<&mut Self>) -> QString {
-        let flake_path = self.flake_path().to_string();
+        // This method name is kept for QML compatibility but now returns flake path
+        self.flake_path().clone()
+    }
+
+    /// Get the commit message for the update
+    pub fn get_update_commit_message(self: Pin<&mut Self>) -> QString {
         let updates_json = self.updates_json().to_string();
-
-        if flake_path.is_empty() {
-            return QString::from("");
-        }
-
-        // Parse updates from JSON
         let updates = updates_from_json(&updates_json);
         let commit_msg = flake_checker::generate_commit_message(&updates);
-
-        // Build the update script
-        let script = build_update_script(&flake_path, &commit_msg);
-
-        // Write script to temp file
-        let script_path = std::env::temp_dir().join("nixos-update-script.sh");
-        if let Err(e) = std::fs::write(&script_path, &script) {
-            eprintln!("Failed to write script: {}", e);
-            return QString::from("");
-        }
-
-        // Make executable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = std::fs::metadata(&script_path) {
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o755);
-                let _ = std::fs::set_permissions(&script_path, perms);
-            }
-        }
-
-        QString::from(&script_path.to_string_lossy().to_string())
+        QString::from(&commit_msg)
     }
 
     pub fn save_config(mut self: Pin<&mut Self>, flake_path: QString, interval: i32, unit: QString) {
@@ -348,14 +324,11 @@ impl qobject::UpdateChecker {
                 self.as_mut().set_check_interval(config.check_interval as i32);
                 self.as_mut().set_check_interval_unit(QString::from(config.check_interval_unit.as_str()));
 
-                // Format last check time for display
+                // Format last check time for display (human readable)
                 if config.last_check_timestamp > 0 {
-                    if let Some(dt) = chrono::DateTime::from_timestamp(config.last_check_timestamp, 0) {
-                        let local: chrono::DateTime<chrono::Local> = dt.into();
-                        self.as_mut().set_last_check_time(QString::from(
-                            &local.format("%Y-%m-%d %H:%M:%S").to_string(),
-                        ));
-                    }
+                    self.as_mut().set_last_check_time(QString::from(
+                        &format_relative_time(config.last_check_timestamp),
+                    ));
                 }
 
                 // Restore cached updates from last check
@@ -425,67 +398,3 @@ impl qobject::UpdateChecker {
     }
 }
 
-/// Build the shell script that performs the update
-fn build_update_script(flake_path: &str, commit_msg: &str) -> String {
-    // Escape single quotes in commit message
-    let escaped_msg = commit_msg.replace('\'', "'\\''");
-
-    format!(
-        r#"#!/bin/bash
-set -e
-
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
-
-echo -e "${{BOLD}}${{CYAN}}╔══════════════════════════════════════╗${{NC}}"
-echo -e "${{BOLD}}${{CYAN}}║       NixOS Flake Update             ║${{NC}}"
-echo -e "${{BOLD}}${{CYAN}}╚══════════════════════════════════════╝${{NC}}"
-echo ""
-
-cd '{flake_path}'
-echo -e "${{BLUE}}📁 Working directory:${{NC}} $(pwd)"
-echo ""
-
-# Add flake path to git safe directories (needed even as root in newer git)
-git config --global --add safe.directory '{flake_path}'
-
-echo -e "${{BOLD}}${{YELLOW}}━━━ Updating flake inputs ━━━${{NC}}"
-# Use script to create a pseudo-TTY so nix outputs colors
-script -qec "NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update --log-format bar-with-logs" /dev/null
-echo ""
-
-echo -e "${{BOLD}}${{MAGENTA}}━━━ Rebuilding NixOS ━━━${{NC}}"
-# Use script to create a pseudo-TTY so nix outputs colors
-script -qec "nixos-rebuild switch --flake . --log-format bar-with-logs" /dev/null
-echo ""
-
-echo -e "${{BOLD}}${{BLUE}}━━━ Committing changes ━━━${{NC}}"
-# Run git as the original user, not as root
-REAL_USER="${{SUDO_USER:-$USER}}"
-if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
-    su - "$REAL_USER" -c "cd '{flake_path}' && git add -A && git commit -m '{escaped_msg}'" || echo -e "${{YELLOW}}Nothing to commit${{NC}}"
-    echo ""
-    echo -e "${{BOLD}}${{CYAN}}━━━ Pushing to remote ━━━${{NC}}"
-    su - "$REAL_USER" -c "cd '{flake_path}' && git push" || echo -e "${{YELLOW}}Push failed or no remote configured${{NC}}"
-else
-    git add -A
-    git commit -m '{escaped_msg}' || echo -e "${{YELLOW}}Nothing to commit${{NC}}"
-    echo ""
-    echo -e "${{BOLD}}${{CYAN}}━━━ Pushing to remote ━━━${{NC}}"
-    git push || echo -e "${{YELLOW}}Push failed or no remote configured${{NC}}"
-fi
-echo ""
-
-echo -e "${{BOLD}}${{GREEN}}✓ Update complete!${{NC}}"
-"#,
-        flake_path = flake_path,
-        escaped_msg = escaped_msg,
-    )
-}

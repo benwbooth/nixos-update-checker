@@ -116,7 +116,13 @@
 
           postInstall = ''
             wrapProgram $out/bin/nixos-update-checker \
-              --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
+              --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}:$out/bin
+
+            # Install the update script
+            install -Dm755 scripts/nixos-update-checker-update $out/bin/nixos-update-checker-update
+
+            # Install polkit policy for clean pkexec dialog
+            install -Dm644 scripts/org.nixos-update-checker.policy $out/share/polkit-1/actions/org.nixos-update-checker.policy
 
             # Install icon to hicolor theme
             mkdir -p $out/share/icons/hicolor/scalable/apps
@@ -149,7 +155,7 @@
           shellHook = ''
             echo "NixOS Update Checker development environment"
             echo "Run 'cargo build' to build the project"
-            export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
+            export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PWD/scripts:$PATH"
             export QMAKE="${qtEnv}/bin/qmake"
             # QTermWidget paths for embedding terminal
             export QTERMWIDGET_INCLUDE_PATH="${qtermwidget}/include"

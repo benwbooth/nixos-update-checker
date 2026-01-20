@@ -1,0 +1,62 @@
+#!/bin/sh
+# NixOS Update Checker - Update Script
+# This script is called by the GUI with pkexec to perform the actual update
+# Expects FLAKE_PATH and COMMIT_MSG environment variables
+
+set -e
+
+if [ -z "$FLAKE_PATH" ]; then
+    echo "Error: FLAKE_PATH environment variable not set"
+    echo "This script should be called from the NixOS Update Checker GUI."
+    exit 1
+fi
+
+# ANSI color codes
+BOLD=$'\033[1m'
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'
+MAGENTA=$'\033[0;35m'
+CYAN=$'\033[0;36m'
+NC=$'\033[0m'
+
+echo "${BOLD}${CYAN}╔══════════════════════════════════════╗${NC}"
+echo "${BOLD}${CYAN}║       NixOS Flake Update             ║${NC}"
+echo "${BOLD}${CYAN}╚══════════════════════════════════════╝${NC}"
+echo ""
+
+cd "$FLAKE_PATH"
+echo "${BLUE}📁 Working directory:${NC} $(pwd)"
+echo ""
+
+# Add flake path to git safe directories (needed even as root in newer git)
+git config --global --add safe.directory "$FLAKE_PATH"
+
+echo "${BOLD}${YELLOW}━━━ Updating flake inputs ━━━${NC}"
+NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update --log-format bar-with-logs
+echo ""
+
+echo "${BOLD}${MAGENTA}━━━ Rebuilding NixOS ━━━${NC}"
+nixos-rebuild switch --flake . --log-format bar-with-logs
+echo ""
+
+echo "${BOLD}${BLUE}━━━ Committing changes ━━━${NC}"
+# Run git as the original user, not as root
+REAL_USER="${SUDO_USER:-$USER}"
+if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
+    # Use su without - to preserve more env, and pass SSH_AUTH_SOCK for git push
+    su "$REAL_USER" -c "cd '$FLAKE_PATH' && git add -A && git commit -m '$COMMIT_MSG'" || echo "${YELLOW}Nothing to commit${NC}"
+    echo ""
+    echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
+    su "$REAL_USER" -c "export SSH_AUTH_SOCK='$SSH_AUTH_SOCK'; cd '$FLAKE_PATH' && git push" || echo "${YELLOW}Push failed or no remote configured${NC}"
+else
+    git add -A
+    git commit -m "$COMMIT_MSG" || echo "${YELLOW}Nothing to commit${NC}"
+    echo ""
+    echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
+    git push || echo "${YELLOW}Push failed or no remote configured${NC}"
+fi
+echo ""
+
+echo "${BOLD}${GREEN}✓ Update complete!${NC}"

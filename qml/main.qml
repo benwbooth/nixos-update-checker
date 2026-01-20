@@ -9,9 +9,9 @@ import Terminal 1.0
 ApplicationWindow {
     id: root
     visible: false  // Start hidden - show via tray menu
-    // Fixed width, height adjusts for terminal
+    // Fixed width, height adjusts for expanded panels
     width: 975
-    height: outputExpanded ? 750 : 450
+    height: 450 + (packageListExpanded ? 150 : 0) + (outputExpanded ? 300 : 0)
     minimumWidth: 900
     minimumHeight: 400
     title: "NixOS Update Checker"
@@ -147,11 +147,12 @@ ApplicationWindow {
                 enabled: checker.has_updates && !terminal.running
                 onTriggered: {
                     root.show()
-                    var scriptPath = checker.get_update_script_path()
-                    if (scriptPath) {
+                    var flakePath = checker.get_update_script_path()
+                    var commitMsg = checker.get_update_commit_message()
+                    if (flakePath) {
                         outputExpanded = true
                         terminal.clear()
-                        terminal.runScript(scriptPath)
+                        terminal.runScript(flakePath, commitMsg)
                     }
                 }
             }
@@ -454,12 +455,12 @@ ApplicationWindow {
                 text: terminal.running ? "Updating..." : "Run Update"
                 enabled: checker.has_updates && !terminal.running
                 onClicked: {
-                    // Get the script path from checker and run in terminal
-                    var scriptPath = checker.get_update_script_path()
-                    if (scriptPath) {
+                    var flakePath = checker.get_update_script_path()
+                    var commitMsg = checker.get_update_commit_message()
+                    if (flakePath) {
                         outputExpanded = true
                         terminal.clear()
-                        terminal.runScript(scriptPath)
+                        terminal.runScript(flakePath, commitMsg)
                     }
                 }
             }

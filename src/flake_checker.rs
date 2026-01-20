@@ -438,6 +438,9 @@ fn parse_dry_build_output(output: &str, current_packages: &std::collections::Has
         }
     }
 
+    // Sort by package name
+    updates.sort_by(|a, b| a.package_name.to_lowercase().cmp(&b.package_name.to_lowercase()));
+
     Ok(updates)
 }
 
@@ -459,6 +462,7 @@ fn is_internal_package(name: &str) -> bool {
         "etc-",
         "system-units",
         "nixos-system-",
+        "user-environment",
     ];
 
     // Suffix matches
@@ -561,6 +565,7 @@ mod tests {
     fn test_is_internal_package() {
         // Should be filtered
         assert!(is_internal_package("system-path"));
+        assert!(is_internal_package("user-environment"));
         assert!(is_internal_package("user-units"));
         assert!(is_internal_package("dbus-1"));
         assert!(is_internal_package("X-Restart-Triggers"));
