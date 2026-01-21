@@ -442,9 +442,13 @@ impl qobject::UpdateChecker {
     pub fn refresh_last_check_time(mut self: Pin<&mut Self>) {
         if let Ok(config) = Config::load() {
             if config.last_check_timestamp > 0 {
-                self.as_mut().set_last_check_time(QString::from(
-                    &format_relative_time(config.last_check_timestamp),
-                ));
+                let relative_time = format_relative_time(config.last_check_timestamp);
+                self.as_mut().set_last_check_time(QString::from(&relative_time));
+
+                // Also update the tooltip
+                let updates = updates_from_json(&config.cached_updates_json);
+                let tooltip = build_tooltip(&updates, config.last_check_timestamp);
+                self.as_mut().set_tooltip_text(QString::from(&tooltip));
             }
         }
     }
