@@ -152,7 +152,13 @@ fn format_relative_time(timestamp: i64) -> String {
 
     if let Some(dt) = chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0) {
         // Use HumanTime with the DateTime directly - it will show "X ago" for past times
-        chrono_humanize::HumanTime::from(dt).to_string()
+        let human = chrono_humanize::HumanTime::from(dt).to_string();
+        // chrono_humanize returns "now" for very recent times, make it clearer
+        if human == "now" {
+            "just now".to_string()
+        } else {
+            human
+        }
     } else {
         "Unknown".to_string()
     }
@@ -282,7 +288,9 @@ impl qobject::UpdateChecker {
             }
 
             // Update last check time (display) - use relative time
-            self.as_mut().set_last_check_time(QString::from("just now"));
+            self.as_mut().set_last_check_time(QString::from(
+                &format_relative_time(check_timestamp)
+            ));
 
             self.as_mut().set_checking(false);
             self.as_mut().check_status_changed();
