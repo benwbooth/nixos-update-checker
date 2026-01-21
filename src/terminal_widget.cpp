@@ -10,6 +10,7 @@
 TerminalWidget::TerminalWidget(QObject *parent)
     : QObject(parent)
     , m_terminal(new QTermWidget(0)) // 0 = don't start shell automatically
+    , m_pollTimer(new QTimer(this))
     , m_running(false)
 {
     // Configure terminal appearance
@@ -25,7 +26,10 @@ TerminalWidget::TerminalWidget(QObject *parent)
 
     // Connect signals
     connect(m_terminal, &QTermWidget::finished, this, &TerminalWidget::onFinished);
-    connect(m_terminal, &QTermWidget::activity, this, &TerminalWidget::onDataReceived);
+
+    // Timer to poll terminal content for status line updates
+    m_pollTimer->setInterval(200); // Poll every 200ms
+    connect(m_pollTimer, &QTimer::timeout, this, &TerminalWidget::pollLastLine);
 
     // Force native window creation
     m_terminal->setAttribute(Qt::WA_NativeWindow);
@@ -64,6 +68,7 @@ void TerminalWidget::runScript(const QString &flakePath, const QString &commitMs
     if (!m_terminal) return;
 
     m_running = true;
+    m_pollTimer->start(); // Start polling for status line updates
     emit runningChanged();
 
     // Set SHELL env var for pkexec security check
@@ -113,13 +118,16 @@ void TerminalWidget::hide() {
 }
 
 void TerminalWidget::onFinished() {
+    m_pollTimer->stop();
+    // Do one final poll to get the last line
+    pollLastLine();
     m_running = false;
     emit runningChanged();
     emit finished(0);
 }
 
-void TerminalWidget::onDataReceived() {
-    if (!m_terminal || !m_running) return;
+void TerminalWidget::pollLastLine() {
+    if (!m_terminal) return;
 
     // Get the last non-empty line from the terminal screen
     // Use setSelectionStart/End to select all text, then get selectedText

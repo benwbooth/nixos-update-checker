@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QWindow>
 #include <QWidget>
+#include <QTimer>
 #include <qtermwidget6/qtermwidget.h>
 
 class TerminalWidget : public QObject {
@@ -35,10 +36,11 @@ signals:
 
 private slots:
     void onFinished();
-    void onDataReceived();
+    void pollLastLine();
 
 private:
     QTermWidget *m_terminal;
+    QTimer *m_pollTimer;
     bool m_running;
     QString m_lastLine;
 };
