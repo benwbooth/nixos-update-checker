@@ -40,7 +40,6 @@ ApplicationWindow {
 
         onUpdates_changed: {
             trayIcon.icon.source = checker.get_icon_path()
-            trayIcon.tooltip = checker.tooltip_text
         }
 
         onConfig_loaded: {
@@ -146,7 +145,7 @@ ApplicationWindow {
         id: trayIcon
         visible: true
         icon.source: "qrc:/icons/nix-flake.svg"
-        tooltip: "NixOS Update Checker"
+        tooltip: checker.tooltip_text || "NixOS Update Checker"
 
         onActivated: function(reason) {
             if (reason === Platform.SystemTrayIcon.Trigger) {
