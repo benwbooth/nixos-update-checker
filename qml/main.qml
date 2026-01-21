@@ -119,6 +119,15 @@ ApplicationWindow {
         onTriggered: checker.check_system_changed()
     }
 
+    // Timer to refresh the "last checked" display (every minute)
+    Timer {
+        id: refreshTimeTimer
+        interval: 60 * 1000
+        repeat: true
+        running: true
+        onTriggered: checker.refresh_last_check_time()
+    }
+
     // Folder dialog for flake path selection
     Platform.FolderDialog {
         id: folderDialog

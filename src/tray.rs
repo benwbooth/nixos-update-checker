@@ -72,6 +72,10 @@ pub mod qobject {
         /// Check if system was updated externally and clear updates if so
         #[qinvokable]
         fn check_system_changed(self: Pin<&mut UpdateChecker>);
+
+        /// Refresh the last check time display (call periodically to update relative time)
+        #[qinvokable]
+        fn refresh_last_check_time(self: Pin<&mut UpdateChecker>);
     }
 
     unsafe extern "RustQt" {
@@ -430,6 +434,17 @@ impl qobject::UpdateChecker {
             if *self.as_ref().has_updates() {
                 self.as_mut().set_status_message(QString::from("System changed, rechecking..."));
                 self.as_mut().check_now();
+            }
+        }
+    }
+
+    /// Refresh the last check time display to show updated relative time
+    pub fn refresh_last_check_time(mut self: Pin<&mut Self>) {
+        if let Ok(config) = Config::load() {
+            if config.last_check_timestamp > 0 {
+                self.as_mut().set_last_check_time(QString::from(
+                    &format_relative_time(config.last_check_timestamp),
+                ));
             }
         }
     }
