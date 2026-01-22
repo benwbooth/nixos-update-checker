@@ -138,7 +138,7 @@
     </g>
   </g>
   <!-- Update indicator - Blue dot -->
-  <circle cx="420" cy="80" r="50" fill="#2196F3"/>
-  <circle cx="420" cy="80" r="38" fill="#42A5F5"/>
-  <circle cx="408" cy="68" r="12" fill="#90CAF9" opacity="0.6"/>
+  <circle cx="420" cy="80" r="75" fill="#2196F3"/>
+  <circle cx="420" cy="80" r="57" fill="#42A5F5"/>
+  <circle cx="408" cy="68" r="18" fill="#90CAF9" opacity="0.6"/>
 </svg>
