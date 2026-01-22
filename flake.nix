@@ -127,8 +127,10 @@
             # Install icon to hicolor theme
             mkdir -p $out/share/icons/hicolor/scalable/apps
             cp resources/icons/nix-flake.svg $out/share/icons/hicolor/scalable/apps/nixos-update-checker.svg
+          '';
 
-            # Update desktop file to use absolute icon path (fixes KDE icon lookup)
+          # Run after copyDesktopItems hook installs the desktop file
+          postFixup = ''
             substituteInPlace $out/share/applications/nixos-update-checker.desktop \
               --replace "Icon=nixos-update-checker" "Icon=$out/share/icons/hicolor/scalable/apps/nixos-update-checker.svg"
           '';
