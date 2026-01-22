@@ -230,7 +230,7 @@ ApplicationWindow {
                     id: flakePathField
                     Layout.fillWidth: true
                     placeholderText: "/etc/nixos"
-                    onEditingFinished: autosaveSettings()
+                    readOnly: true
                 }
 
                 Button {
