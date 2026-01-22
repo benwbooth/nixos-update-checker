@@ -213,6 +213,7 @@ impl qobject::UpdateChecker {
 
         self.as_mut().set_checking(true);
         self.as_mut().set_status_message(QString::from("Checking for updates..."));
+        self.as_mut().set_tooltip_text(QString::from("NixOS Update Checker\nChecking for updates..."));
         self.as_mut().check_status_changed();
 
         // Spawn background thread for the check
