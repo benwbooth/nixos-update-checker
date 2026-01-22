@@ -169,11 +169,21 @@
       nixosModules.default = { config, lib, pkgs, ... }:
         with lib;
         let
-          cfg = config.services.nixos-update-checker;
+          cfg = config.programs.nixos-update-checker;
           system = pkgs.stdenv.hostPlatform.system;
+          pkg = cfg.package;
+          desktopItem = pkgs.makeDesktopItem {
+            name = "nixos-update-checker-autostart";
+            exec = "${pkg}/bin/nixos-update-checker";
+            icon = "nixos-update-checker";
+            desktopName = "NixOS Update Checker";
+            comment = "Monitor NixOS flake repository for updates";
+            categories = [ "System" "Monitor" ];
+            startupNotify = false;
+          };
         in
         {
-          options.services.nixos-update-checker = {
+          options.programs.nixos-update-checker = {
             enable = mkEnableOption "NixOS Update Checker";
 
             package = mkOption {
@@ -181,10 +191,20 @@
               default = self.packages.${system}.default;
               description = "The nixos-update-checker package to use";
             };
+
+            autostart = mkOption {
+              type = types.bool;
+              default = true;
+              description = "Whether to autostart on user login";
+            };
           };
 
           config = mkIf cfg.enable {
-            environment.systemPackages = [ cfg.package ];
+            environment.systemPackages = [ pkg ];
+
+            # XDG autostart entry for user session
+            environment.etc."xdg/autostart/nixos-update-checker.desktop".source =
+              mkIf cfg.autostart "${desktopItem}/share/applications/nixos-update-checker-autostart.desktop";
           };
         };
     };
