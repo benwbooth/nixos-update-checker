@@ -11,7 +11,7 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
+    (flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
@@ -163,39 +163,29 @@
           '';
         };
 
-        # NixOS module for easy integration
-        nixosModules.default = { config, lib, pkgs, ... }:
-          with lib;
-          let
-            cfg = config.services.nixos-update-checker;
-          in
-          {
-            options.services.nixos-update-checker = {
-              enable = mkEnableOption "NixOS Update Checker";
+      }
+    )) // {
+      # NixOS module for easy integration (outside eachDefaultSystem)
+      nixosModules.default = { config, lib, pkgs, ... }:
+        with lib;
+        let
+          cfg = config.services.nixos-update-checker;
+          system = pkgs.stdenv.hostPlatform.system;
+        in
+        {
+          options.services.nixos-update-checker = {
+            enable = mkEnableOption "NixOS Update Checker";
 
-              flakePath = mkOption {
-                type = types.path;
-                default = /etc/nixos;
-                description = "Path to the NixOS flake configuration";
-              };
-
-              checkIntervalMinutes = mkOption {
-                type = types.int;
-                default = 60;
-                description = "How often to check for updates (in minutes)";
-              };
-            };
-
-            config = mkIf cfg.enable {
-              environment.systemPackages = [ self.packages.${system}.default ];
-
-              # Create default config
-              environment.etc."xdg/nixos-update-checker/config.toml".text = ''
-                flake_path = "${cfg.flakePath}"
-                check_interval_minutes = ${toString cfg.checkIntervalMinutes}
-              '';
+            package = mkOption {
+              type = types.package;
+              default = self.packages.${system}.default;
+              description = "The nixos-update-checker package to use";
             };
           };
-      }
-    );
+
+          config = mkIf cfg.enable {
+            environment.systemPackages = [ cfg.package ];
+          };
+        };
+    };
 }
