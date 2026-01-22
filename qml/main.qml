@@ -42,6 +42,10 @@ ApplicationWindow {
             trayIcon.icon.source = checker.get_icon_path()
         }
 
+        onCheckingChanged: {
+            trayIcon.icon.source = checker.get_icon_path()
+        }
+
         onConfig_loaded: {
             flakePathField.text = checker.flake_path
             intervalSpinBox.value = checker.check_interval
