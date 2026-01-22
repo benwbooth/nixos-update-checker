@@ -66,17 +66,12 @@ else
 fi
 echo ""
 
-# Press enter message before final status
-echo ""
-echo "=== Press Enter to close ==="
-
 # Final status - this will be the status line
+echo ""
 if [ "$FAILED" -eq 1 ]; then
     echo "${BOLD}${RED}✗ Update failed${NC}"
-    read
     exit 1
 else
     echo "${BOLD}${GREEN}✓ Update complete!${NC}"
-    read
     exit 0
 fi
