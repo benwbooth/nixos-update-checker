@@ -74,6 +74,7 @@ void TerminalWidget::runScript(const QString &flakePath, const QString &commitMs
     // Set SHELL env var for pkexec security check
     QStringList env = QProcess::systemEnvironment();
     env << "SHELL=/bin/sh";
+    env << "TERM=xterm-256color";
     m_terminal->setEnvironment(env);
 
     // Find the script - check dev location first, then installed location
@@ -86,8 +87,7 @@ void TerminalWidget::runScript(const QString &flakePath, const QString &commitMs
     // Get SSH_AUTH_SOCK to pass through for git push
     QString sshAuthSock = qEnvironmentVariable("SSH_AUTH_SOCK");
 
-    // Run pkexec with env to pass variables (including SSH_AUTH_SOCK for git push)
-    // Script handles "Press Enter to close" and final status message
+    // Run pkexec with env to pass variables
     m_terminal->setShellProgram("/bin/sh");
     m_terminal->setArgs({"-c",
         QString("pkexec env FLAKE_PATH='%1' COMMIT_MSG='%2' SSH_AUTH_SOCK='%3' '%4'")
@@ -123,7 +123,26 @@ void TerminalWidget::onFinished() {
     pollLastLine();
     m_running = false;
     emit runningChanged();
-    emit finished(0);
+
+    // Determine exit code by checking terminal output for success/failure markers
+    // The script outputs "✓ Update complete!" on success, "✗ Update failed" on failure
+    int exitCode = 0;
+    if (m_terminal) {
+        // Get all terminal text
+        int totalLines = m_terminal->screenLinesCount() + m_terminal->historyLinesCount();
+        int totalCols = m_terminal->screenColumnsCount();
+        m_terminal->setSelectionStart(0, 0);
+        m_terminal->setSelectionEnd(totalLines, totalCols);
+        QString allText = m_terminal->selectedText();
+        m_terminal->setSelectionStart(0, 0);
+        m_terminal->setSelectionEnd(0, 0);
+
+        if (allText.contains("Update failed") || allText.contains("✗")) {
+            exitCode = 1;
+        }
+    }
+
+    emit finished(exitCode);
 }
 
 void TerminalWidget::pollLastLine() {
