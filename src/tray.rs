@@ -521,12 +521,20 @@ impl qobject::UpdateChecker {
         reboot_packages
     }
 
-    /// Reboot the system using systemctl
+    /// Reboot the system using loginctl (works without root via polkit)
     pub fn reboot_system(&self) {
         eprintln!("Initiating system reboot...");
-        let _ = std::process::Command::new("systemctl")
+        // loginctl reboot works for regular users via polkit/D-Bus
+        let result = std::process::Command::new("loginctl")
             .arg("reboot")
             .spawn();
+
+        if result.is_err() {
+            // Fallback to systemctl
+            let _ = std::process::Command::new("systemctl")
+                .arg("reboot")
+                .spawn();
+        }
     }
 }
 
