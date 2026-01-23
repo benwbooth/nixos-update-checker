@@ -447,11 +447,22 @@ ApplicationWindow {
             onFinished: function(exitCode) {
                 checker.set_update_running(false)
                 checker.set_update_status_line(exitCode === 0 ? "Update completed successfully" : "Update failed with exit code " + exitCode)
+
+                // Check for reboot-requiring packages before clearing
+                var needsReboot = exitCode === 0 && checker.check_reboot_required()
+                var rebootPkgs = needsReboot ? checker.get_reboot_packages() : ""
+
                 // Clear updates since we just applied them
                 if (exitCode === 0) {
                     checker.set_has_updates(false)
                     checker.set_update_count(0)
                     checker.set_updates_json("[]")
+
+                    // Show reboot dialog if needed
+                    if (needsReboot) {
+                        rebootDialog.rebootPackages = rebootPkgs
+                        rebootDialog.open()
+                    }
                 }
                 checker.update_completed()
             }
@@ -499,5 +510,47 @@ ApplicationWindow {
     onClosing: function(close) {
         close.accepted = false
         root.hide()
+    }
+
+    // Reboot confirmation dialog
+    Dialog {
+        id: rebootDialog
+        title: "Reboot Required"
+        modal: true
+        anchors.centerIn: parent
+        width: 400
+        standardButtons: Dialog.Yes | Dialog.No
+
+        property string rebootPackages: ""
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 10
+
+            Label {
+                text: "The following packages were updated and may require a reboot to take full effect:"
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Label {
+                text: rebootDialog.rebootPackages
+                font.bold: true
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Label {
+                text: "Would you like to reboot now?"
+                Layout.fillWidth: true
+            }
+        }
+
+        onAccepted: {
+            // Execute reboot command
+            Qt.callLater(function() {
+                checker.reboot_system()
+            })
+        }
     }
 }

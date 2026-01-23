@@ -76,6 +76,18 @@ pub mod qobject {
         /// Refresh the last check time display (call periodically to update relative time)
         #[qinvokable]
         fn refresh_last_check_time(self: Pin<&mut UpdateChecker>);
+
+        /// Check if any updated packages require a reboot
+        #[qinvokable]
+        fn check_reboot_required(self: &UpdateChecker) -> bool;
+
+        /// Get list of packages that require reboot (comma-separated)
+        #[qinvokable]
+        fn get_reboot_packages(self: &UpdateChecker) -> QString;
+
+        /// Reboot the system
+        #[qinvokable]
+        fn reboot_system(self: &UpdateChecker);
     }
 
     unsafe extern "RustQt" {
@@ -460,6 +472,61 @@ impl qobject::UpdateChecker {
                 self.as_mut().set_tooltip_text(QString::from(&tooltip));
             }
         }
+    }
+
+    /// Check if any updated packages require a reboot
+    pub fn check_reboot_required(&self) -> bool {
+        !self.get_reboot_packages_list().is_empty()
+    }
+
+    /// Get list of packages that require reboot (comma-separated)
+    pub fn get_reboot_packages(&self) -> QString {
+        QString::from(&self.get_reboot_packages_list().join(", "))
+    }
+
+    /// Internal helper to get the list of reboot-requiring packages
+    fn get_reboot_packages_list(&self) -> Vec<String> {
+        // Packages that typically require a reboot when updated
+        const REBOOT_PACKAGES: &[&str] = &[
+            "linux",
+            "kernel",
+            "systemd",
+            "glibc",
+            "dbus",
+            "nvidia",
+            "amdgpu",
+            "mesa",
+            "linux-firmware",
+            "intel-microcode",
+            "amd-microcode",
+            "grub",
+            "systemd-boot",
+            "initrd",
+            "firmware",
+        ];
+
+        let updates_json = self.updates_json().to_string();
+        let updates = updates_from_json(&updates_json);
+
+        let mut reboot_packages = Vec::new();
+        for update in &updates {
+            let name_lower = update.package_name.to_lowercase();
+            for &pkg in REBOOT_PACKAGES {
+                if name_lower.contains(pkg) {
+                    reboot_packages.push(update.package_name.clone());
+                    break;
+                }
+            }
+        }
+        reboot_packages
+    }
+
+    /// Reboot the system using systemctl
+    pub fn reboot_system(&self) {
+        eprintln!("Initiating system reboot...");
+        let _ = std::process::Command::new("systemctl")
+            .arg("reboot")
+            .spawn();
     }
 }
 
