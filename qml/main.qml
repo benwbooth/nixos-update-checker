@@ -19,6 +19,7 @@ ApplicationWindow {
 
     property bool outputExpanded: false
     property bool packageListExpanded: false
+    property bool updateJustCompleted: false  // Track if update just finished successfully
 
     // Progress tracking for update process
     QtObject {
@@ -32,34 +33,63 @@ ApplicationWindow {
                 return
             }
 
-            // Parse nix build progress patterns like "[5/100 built]" or "[5/100 built, 10/50 copied]"
-            var builtMatch = line.match(/\[(\d+)\/(\d+)\s+built/)
-            var copiedMatch = line.match(/(\d+)\/(\d+)\s+copied/)
+            // Parse nix build progress patterns from progress-bar.cc:
+            // Format: [running/done/expected built] when builds are running
+            //         [done/expected built] when no running builds
+            //         [done built] when complete
+            // Copied: "256 copied" or "256 copied (123.4/500.0 MiB)"
+            // Download: "1115.9 MiB DL"
+            var builtMatch = line.match(/\[(\d+)(?:\/(\d+))?(?:\/(\d+))?\s+built/)
+            var copiedMatch = line.match(/(\d+)\s+copied/)
+            var copiedSizeMatch = line.match(/copied\s+\(([\d.]+)\/([\d.]+)\s*MiB\)/)
+            var dlMatch = line.match(/([\d.]+)\s*MiB\s+DL/)
 
             if (builtMatch) {
-                var built = parseInt(builtMatch[1])
-                var totalBuild = parseInt(builtMatch[2])
-
-                var copied = 0
-                var totalCopy = 0
-                if (copiedMatch) {
-                    copied = parseInt(copiedMatch[1])
-                    totalCopy = parseInt(copiedMatch[2])
+                // Parse the built numbers based on how many are present
+                // 3 numbers: running/done/expected -> done=match[2], expected=match[3]
+                // 2 numbers: done/expected -> done=match[1], expected=match[2]
+                // 1 number: done -> done=match[1], expected=done (complete)
+                var done, expected
+                if (builtMatch[3]) {
+                    // 3 numbers: running/done/expected
+                    done = parseInt(builtMatch[2])
+                    expected = parseInt(builtMatch[3])
+                } else if (builtMatch[2]) {
+                    // 2 numbers: done/expected
+                    done = parseInt(builtMatch[1])
+                    expected = parseInt(builtMatch[2])
+                } else {
+                    // 1 number: done (complete)
+                    done = parseInt(builtMatch[1])
+                    expected = done
                 }
 
-                // Calculate combined progress (build phase is 70%, copy phase is 30%)
-                var buildProgress = totalBuild > 0 ? built / totalBuild : 0
-                var copyProgress = totalCopy > 0 ? copied / totalCopy : 0
+                var copied = copiedMatch ? parseInt(copiedMatch[1]) : 0
+                var copiedSize = 0, copiedTotal = 0
+                if (copiedSizeMatch) {
+                    copiedSize = parseFloat(copiedSizeMatch[1])
+                    copiedTotal = parseFloat(copiedSizeMatch[2])
+                }
 
-                if (totalCopy > 0) {
+                // Calculate combined progress (build phase is 70%, copy/download phase is 30%)
+                var buildProgress = expected > 0 ? done / expected : 1.0
+                var copyProgress = copiedTotal > 0 ? copiedSize / copiedTotal : 0
+
+                if (copiedTotal > 0) {
                     progress = (buildProgress * 0.7) + (copyProgress * 0.3)
                 } else {
                     progress = buildProgress * 0.7
                 }
 
                 var pct = (progress * 100).toFixed(1)
-                progressText = "(" + built + "/" + totalBuild + ") " + pct + "%"
-                statusText = "Building derivations..."
+                var builtText = done + "/" + expected + " built"
+                var copiedText = copied > 0 ? ", " + copied + " copied" : ""
+                if (copiedTotal > 0) {
+                    copiedText += " (" + copiedSize.toFixed(1) + "/" + copiedTotal.toFixed(1) + " MiB)"
+                }
+                var dlText = dlMatch ? ", " + dlMatch[1] + " MiB DL" : ""
+                progressText = pct + "%"
+                statusText = builtText + copiedText + dlText
             }
             // Parse "copying path" lines
             else if (line.indexOf("copying path") >= 0) {
@@ -97,6 +127,7 @@ ApplicationWindow {
             progress = 0.0
             statusText = "Starting update..."
             progressText = "0%"
+            root.updateJustCompleted = false
         }
 
         function complete(success) {
@@ -126,6 +157,10 @@ ApplicationWindow {
 
         onUpdates_changed: {
             trayIcon.icon.source = checker.get_icon_path()
+            // Reset "Update complete!" status when new updates are found
+            if (checker.has_updates) {
+                root.updateJustCompleted = false
+            }
         }
 
         onCheckingChanged: {
@@ -392,10 +427,12 @@ ApplicationWindow {
                     }
 
                     Label {
-                        text: checker.has_updates
-                            ? checker.update_count + (checker.update_count === 1 ? " package" : " packages") + " available"
-                            : "No updates available"
-                        color: checker.has_updates ? "#2196F3" : palette.text
+                        text: root.updateJustCompleted
+                            ? "Update complete!"
+                            : (checker.has_updates
+                                ? checker.update_count + (checker.update_count === 1 ? " package" : " packages") + " available"
+                                : "No updates available")
+                        color: root.updateJustCompleted ? "#4CAF50" : (checker.has_updates ? "#2196F3" : palette.text)
                     }
                 }
 
@@ -591,12 +628,16 @@ ApplicationWindow {
                 // Update progress bar
                 progressInfo.complete(exitCode === 0)
 
+                // Ensure terminal stays visible
+                terminal.show()
+
                 // Check for reboot-requiring packages before clearing
                 var needsReboot = exitCode === 0 && checker.check_reboot_required()
                 var rebootPkgs = needsReboot ? checker.get_reboot_packages() : ""
 
                 // Clear updates since we just applied them
                 if (exitCode === 0) {
+                    root.updateJustCompleted = true
                     checker.set_has_updates(false)
                     checker.set_update_count(0)
                     checker.set_updates_json("[]")
