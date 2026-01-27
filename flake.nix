@@ -124,16 +124,19 @@
             # Install polkit policy for clean pkexec dialog
             install -Dm644 scripts/org.nixos-update-checker.policy $out/share/polkit-1/actions/org.nixos-update-checker.policy
 
-            # Install icon to hicolor theme
+            # Install icon to hicolor theme (SVG for scalable)
             mkdir -p $out/share/icons/hicolor/scalable/apps
             cp resources/icons/nix-flake.svg $out/share/icons/hicolor/scalable/apps/nixos-update-checker.svg
+
+            # Install PNG icons at standard sizes (KDE prefers these)
+            for size in 16 24 32 48 64 128 256; do
+              mkdir -p $out/share/icons/hicolor/''${size}x''${size}/apps
+              cp resources/icons/png/nixos-update-checker-''${size}.png $out/share/icons/hicolor/''${size}x''${size}/apps/nixos-update-checker.png
+            done
           '';
 
-          # Run after copyDesktopItems hook installs the desktop file
-          postFixup = ''
-            substituteInPlace $out/share/applications/nixos-update-checker.desktop \
-              --replace "Icon=nixos-update-checker" "Icon=$out/share/icons/hicolor/scalable/apps/nixos-update-checker.svg"
-          '';
+          # Desktop file uses Icon=nixos-update-checker
+          # KDE will find PNG icons in hicolor theme at standard sizes
 
           meta = with pkgs.lib; {
             description = "System tray app for monitoring NixOS flake updates";
