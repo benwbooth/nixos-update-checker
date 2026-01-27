@@ -35,14 +35,14 @@ echo ""
 git config --global --add safe.directory "$FLAKE_PATH"
 
 echo "${BOLD}${YELLOW}━━━ Updating flake inputs ━━━${NC}"
-if ! NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update --log-format raw; then
+if ! NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update; then
     echo "${RED}Failed to update flake inputs${NC}"
     FAILED=1
 fi
 echo ""
 
 echo "${BOLD}${MAGENTA}━━━ Rebuilding NixOS ━━━${NC}"
-if ! nixos-rebuild switch --flake . --log-format raw; then
+if ! nixos-rebuild switch --flake .; then
     echo "${RED}Failed to rebuild NixOS${NC}"
     FAILED=1
 fi
