@@ -20,6 +20,92 @@ ApplicationWindow {
     property bool outputExpanded: false
     property bool packageListExpanded: false
 
+    // Progress tracking for update process
+    QtObject {
+        id: progressInfo
+        property real progress: 0.0
+        property string statusText: ""
+        property string progressText: ""
+
+        function parseProgress(line) {
+            if (!line) {
+                return
+            }
+
+            // Parse nix build progress patterns like "[5/100 built]" or "[5/100 built, 10/50 copied]"
+            var builtMatch = line.match(/\[(\d+)\/(\d+)\s+built/)
+            var copiedMatch = line.match(/(\d+)\/(\d+)\s+copied/)
+
+            if (builtMatch) {
+                var built = parseInt(builtMatch[1])
+                var totalBuild = parseInt(builtMatch[2])
+
+                var copied = 0
+                var totalCopy = 0
+                if (copiedMatch) {
+                    copied = parseInt(copiedMatch[1])
+                    totalCopy = parseInt(copiedMatch[2])
+                }
+
+                // Calculate combined progress (build phase is 70%, copy phase is 30%)
+                var buildProgress = totalBuild > 0 ? built / totalBuild : 0
+                var copyProgress = totalCopy > 0 ? copied / totalCopy : 0
+
+                if (totalCopy > 0) {
+                    progress = (buildProgress * 0.7) + (copyProgress * 0.3)
+                } else {
+                    progress = buildProgress * 0.7
+                }
+
+                var pct = (progress * 100).toFixed(1)
+                progressText = "(" + built + "/" + totalBuild + ") " + pct + "%"
+                statusText = "Building derivations..."
+            }
+            // Parse "copying path" lines
+            else if (line.indexOf("copying path") >= 0) {
+                var pathMatch = line.match(/copying path '[^']*-([^-']+)-[^']*'/)
+                if (pathMatch) {
+                    statusText = "Copying: " + pathMatch[1]
+                } else {
+                    statusText = "Copying paths..."
+                }
+            }
+            // Parse "building" lines
+            else if (line.indexOf("building '/nix/store") >= 0) {
+                var buildingMatch = line.match(/building '[^']*-([^-']+)-[^']*\.drv'/)
+                if (buildingMatch) {
+                    statusText = "Building: " + buildingMatch[1]
+                }
+            }
+            // Parse nixos-rebuild phases
+            else if (line.indexOf("building the system configuration") >= 0) {
+                statusText = "Building system configuration..."
+            }
+            else if (line.indexOf("activating the configuration") >= 0) {
+                progress = 0.9
+                progressText = "90%"
+                statusText = "Activating configuration..."
+            }
+            else if (line.indexOf("setting up") >= 0 || line.indexOf("reloading") >= 0) {
+                progress = 0.95
+                progressText = "95%"
+                statusText = "Finalizing..."
+            }
+        }
+
+        function reset() {
+            progress = 0.0
+            statusText = "Starting update..."
+            progressText = "0%"
+        }
+
+        function complete(success) {
+            progress = 1.0
+            progressText = "100%"
+            statusText = success ? "Update complete!" : "Update failed"
+        }
+    }
+
     // Autosave function
     function autosaveSettings() {
         if (flakePathField.text.length > 0) {
@@ -173,6 +259,7 @@ ApplicationWindow {
                     if (flakePath) {
                         outputExpanded = true
                         terminal.clear()
+                        progressInfo.reset()
                         terminal.runScript(flakePath, commitMsg)
                     }
                 }
@@ -421,6 +508,59 @@ ApplicationWindow {
                 }
             }
 
+            // Progress bar for update progress
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: outputExpanded && (terminal.running || progressBar.value >= 1.0)
+                spacing: 2
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    Label {
+                        id: progressLabel
+                        text: progressInfo.statusText
+                        elide: Text.ElideMiddle
+                        Layout.fillWidth: true
+                        font.family: "monospace"
+                        font.pointSize: 9
+                    }
+
+                    Label {
+                        text: progressInfo.progressText
+                        font.family: "monospace"
+                        font.pointSize: 9
+                        font.bold: true
+                    }
+                }
+
+                ProgressBar {
+                    id: progressBar
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 1
+                    value: progressInfo.progress
+
+                    // Custom styling for better visibility
+                    background: Rectangle {
+                        implicitHeight: 6
+                        color: "#e0e0e0"
+                        radius: 3
+                    }
+
+                    contentItem: Item {
+                        implicitHeight: 6
+                        Rectangle {
+                            width: progressBar.visualPosition * parent.width
+                            height: parent.height
+                            radius: 3
+                            color: progressBar.value >= 1.0 ? "#4CAF50" : "#2196F3"
+                        }
+                    }
+                }
+            }
+
             // Embedded terminal using WindowContainer
             WindowContainer {
                 id: terminalContainer
@@ -448,6 +588,9 @@ ApplicationWindow {
                 checker.set_update_running(false)
                 checker.set_update_status_line(exitCode === 0 ? "Update completed successfully" : "Update failed with exit code " + exitCode)
 
+                // Update progress bar
+                progressInfo.complete(exitCode === 0)
+
                 // Check for reboot-requiring packages before clearing
                 var needsReboot = exitCode === 0 && checker.check_reboot_required()
                 var rebootPkgs = needsReboot ? checker.get_reboot_packages() : ""
@@ -465,6 +608,10 @@ ApplicationWindow {
                     }
                 }
                 checker.update_completed()
+            }
+
+            onLastLineChanged: {
+                progressInfo.parseProgress(terminal.lastLine)
             }
 
             onRunningChanged: {
@@ -492,6 +639,7 @@ ApplicationWindow {
                     if (flakePath) {
                         outputExpanded = true
                         terminal.clear()
+                        progressInfo.reset()
                         terminal.runScript(flakePath, commitMsg)
                     }
                 }
