@@ -6,6 +6,24 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QStandardPaths>
+#include <QDir>
+#include <QDateTime>
+#include <QTextStream>
+
+static QString debugLogPath() {
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    QDir().mkpath(dir);
+    return dir + "/terminal-debug.log";
+}
+
+static void debugLog(const QString &msg) {
+    QFile f(debugLogPath());
+    if (f.open(QIODevice::Append | QIODevice::Text)) {
+        QTextStream out(&f);
+        out << QDateTime::currentDateTime().toString(Qt::ISODate) << " " << msg << "\n";
+    }
+}
 
 TerminalWidget::TerminalWidget(QObject *parent)
     : QObject(parent)
@@ -106,8 +124,17 @@ void TerminalWidget::clear() {
 }
 
 void TerminalWidget::show() {
+    debugLog("TerminalWidget::show() called");
     if (m_terminal) {
+        debugLog(QString("  Before show - isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
+        if (m_terminal->windowHandle()) {
+            debugLog(QString("  Before show - windowHandle visible:%1").arg(m_terminal->windowHandle()->isVisible()));
+        }
         m_terminal->show();
+        debugLog(QString("  After show - isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
+        if (m_terminal->windowHandle()) {
+            debugLog(QString("  After show - windowHandle visible:%1").arg(m_terminal->windowHandle()->isVisible()));
+        }
     }
 }
 
@@ -118,17 +145,34 @@ void TerminalWidget::hide() {
 }
 
 void TerminalWidget::onFinished() {
+    debugLog("=== TerminalWidget::onFinished() START ===");
+    debugLog(QString("  Log file: %1").arg(debugLogPath()));
+
+    if (m_terminal) {
+        debugLog(QString("  m_terminal->isVisible():%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
+        debugLog(QString("  m_terminal->windowHandle():%1").arg((quintptr)m_terminal->windowHandle(), 0, 16));
+        if (m_terminal->windowHandle()) {
+            debugLog(QString("  windowHandle()->isVisible():%1 isExposed:%2").arg(m_terminal->windowHandle()->isVisible()).arg(m_terminal->windowHandle()->isExposed()));
+        }
+    }
+
     m_pollTimer->stop();
-    // Do one final poll to get the last line
     pollLastLine();
     m_running = false;
     emit runningChanged();
 
-    // Determine exit code by checking terminal output for success/failure markers
-    // The script outputs "✓ Update complete!" on success, "✗ Update failed" on failure
+    debugLog("  After runningChanged:");
+    if (m_terminal) {
+        debugLog(QString("  isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
+        if (m_terminal->windowHandle()) {
+            debugLog(QString("  windowHandle visible:%1").arg(m_terminal->windowHandle()->isVisible()));
+        } else {
+            debugLog("  windowHandle() is NULL!");
+        }
+    }
+
     int exitCode = 0;
     if (m_terminal) {
-        // Get all terminal text
         int totalLines = m_terminal->screenLinesCount() + m_terminal->historyLinesCount();
         int totalCols = m_terminal->screenColumnsCount();
         m_terminal->setSelectionStart(0, 0);
@@ -140,9 +184,65 @@ void TerminalWidget::onFinished() {
         if (allText.contains("Update failed") || allText.contains("✗")) {
             exitCode = 1;
         }
+        debugLog(QString("  exitCode:%1").arg(exitCode));
     }
 
+    debugLog("  About to emit finished()");
     emit finished(exitCode);
+
+    debugLog("  After emit finished():");
+    if (m_terminal) {
+        debugLog(QString("  isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
+        if (m_terminal->windowHandle()) {
+            debugLog(QString("  windowHandle visible:%1").arg(m_terminal->windowHandle()->isVisible()));
+        } else {
+            debugLog("  windowHandle() is NULL after finished!");
+        }
+    }
+    debugLog("=== TerminalWidget::onFinished() END ===");
+
+    // Delayed checks to catch async changes
+    QTimer::singleShot(100, this, [this]() {
+        debugLog("=== Delayed check (100ms) ===");
+        if (m_terminal) {
+            debugLog(QString("  isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
+            if (m_terminal->windowHandle()) {
+                debugLog(QString("  windowHandle visible:%1 exposed:%2").arg(m_terminal->windowHandle()->isVisible()).arg(m_terminal->windowHandle()->isExposed()));
+            } else {
+                debugLog("  windowHandle() is NULL!");
+            }
+        } else {
+            debugLog("  m_terminal is NULL!");
+        }
+    });
+
+    QTimer::singleShot(500, this, [this]() {
+        debugLog("=== Delayed check (500ms) ===");
+        if (m_terminal) {
+            debugLog(QString("  isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
+            if (m_terminal->windowHandle()) {
+                debugLog(QString("  windowHandle visible:%1 exposed:%2").arg(m_terminal->windowHandle()->isVisible()).arg(m_terminal->windowHandle()->isExposed()));
+            } else {
+                debugLog("  windowHandle() is NULL!");
+            }
+        } else {
+            debugLog("  m_terminal is NULL!");
+        }
+    });
+
+    QTimer::singleShot(2000, this, [this]() {
+        debugLog("=== Delayed check (2000ms) ===");
+        if (m_terminal) {
+            debugLog(QString("  isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
+            if (m_terminal->windowHandle()) {
+                debugLog(QString("  windowHandle visible:%1 exposed:%2").arg(m_terminal->windowHandle()->isVisible()).arg(m_terminal->windowHandle()->isExposed()));
+            } else {
+                debugLog("  windowHandle() is NULL!");
+            }
+        } else {
+            debugLog("  m_terminal is NULL!");
+        }
+    });
 }
 
 void TerminalWidget::pollLastLine() {

@@ -179,7 +179,7 @@
         with lib;
         let
           cfg = config.programs.nixos-update-checker;
-          system = pkgs.stdenv.hostPlatform.system;
+          inherit (pkgs.stdenv.hostPlatform) system;
           pkg = cfg.package;
           desktopItem = pkgs.makeDesktopItem {
             name = "nixos-update-checker-autostart";
