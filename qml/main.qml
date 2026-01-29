@@ -292,7 +292,6 @@ ApplicationWindow {
                     var flakePath = checker.get_update_script_path()
                     var commitMsg = checker.get_update_commit_message()
                     if (flakePath) {
-                        outputExpanded = true
                         terminal.clear()
                         progressInfo.reset()
                         terminal.runScript(flakePath, commitMsg)
@@ -622,6 +621,13 @@ ApplicationWindow {
             id: terminal
 
             onFinished: function(exitCode) {
+                terminal.log("=== QML onFinished START, exitCode=" + exitCode + " ===")
+                terminal.log("  outputExpanded=" + outputExpanded)
+                terminal.log("  terminalContainer.visible=" + terminalContainer.visible)
+                terminal.log("  terminalContainer.width=" + terminalContainer.width + " height=" + terminalContainer.height)
+                terminal.log("  root.width=" + root.width + " root.height=" + root.height)
+                terminal.log("  terminal.hasContent=" + terminal.hasContent())
+
                 checker.set_update_running(false)
                 checker.set_update_status_line(exitCode === 0 ? "Update completed successfully" : "Update failed with exit code " + exitCode)
 
@@ -630,6 +636,9 @@ ApplicationWindow {
 
                 // Ensure terminal stays visible
                 terminal.show()
+
+                terminal.log("  After show - terminalContainer.visible=" + terminalContainer.visible)
+                terminal.log("  After show - terminalContainer.width=" + terminalContainer.width + " height=" + terminalContainer.height)
 
                 // Check for reboot-requiring packages before clearing
                 var needsReboot = exitCode === 0 && checker.check_reboot_required()
@@ -642,6 +651,12 @@ ApplicationWindow {
                     checker.set_update_count(0)
                     checker.set_updates_json("[]")
 
+                    terminal.log("  After clearing updates:")
+                    terminal.log("  terminalContainer.visible=" + terminalContainer.visible)
+                    terminal.log("  terminalContainer.width=" + terminalContainer.width + " height=" + terminalContainer.height)
+                    terminal.log("  outputExpanded=" + outputExpanded)
+                    terminal.log("  root.height=" + root.height)
+
                     // Show reboot dialog if needed
                     if (needsReboot) {
                         rebootDialog.rebootPackages = rebootPkgs
@@ -649,6 +664,7 @@ ApplicationWindow {
                     }
                 }
                 checker.update_completed()
+                terminal.log("=== QML onFinished END ===")
             }
 
             onLastLineChanged: {
@@ -678,7 +694,6 @@ ApplicationWindow {
                     var flakePath = checker.get_update_script_path()
                     var commitMsg = checker.get_update_commit_message()
                     if (flakePath) {
-                        outputExpanded = true
                         terminal.clear()
                         progressInfo.reset()
                         terminal.runScript(flakePath, commitMsg)

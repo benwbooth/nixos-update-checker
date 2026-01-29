@@ -144,6 +144,16 @@ void TerminalWidget::hide() {
     }
 }
 
+void TerminalWidget::log(const QString &msg) {
+    debugLog(msg);
+}
+
+bool TerminalWidget::hasContent() const {
+    if (!m_terminal) return false;
+    int lines = m_terminal->screenLinesCount() + m_terminal->historyLinesCount();
+    return lines > 1;
+}
+
 void TerminalWidget::onFinished() {
     debugLog("=== TerminalWidget::onFinished() START ===");
     debugLog(QString("  Log file: %1").arg(debugLogPath()));
