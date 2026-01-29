@@ -98,7 +98,7 @@ impl Config {
         Ok(config)
     }
 
-    /// Save config to the default XDG config path
+    /// Save config to the default XDG config path (atomic write via temp file + rename)
     pub fn save(&self) -> Result<(), ConfigError> {
         let path = Self::config_path()?;
 
@@ -108,7 +108,16 @@ impl Config {
         }
 
         let content = toml::to_string_pretty(self)?;
-        fs::write(&path, content)?;
+
+        // Write to temp file in the same directory, then rename for atomicity.
+        // rename() on the same filesystem is atomic on POSIX.
+        let rand: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(std::process::id() as u64);
+        let tmp_path = path.with_extension(format!("toml.{rand}.tmp"));
+        fs::write(&tmp_path, &content)?;
+        fs::rename(&tmp_path, &path)?;
         Ok(())
     }
 
