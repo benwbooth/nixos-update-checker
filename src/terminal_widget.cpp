@@ -27,16 +27,33 @@ static void debugLog(const QString &msg) {
 
 TerminalWidget::TerminalWidget(QObject *parent)
     : QObject(parent)
-    , m_terminal(new QTermWidget(0)) // 0 = don't start shell automatically
+    , m_terminal(nullptr)
     , m_pollTimer(new QTimer(this))
     , m_running(false)
 {
+    // Timer to poll terminal content for status line updates
+    m_pollTimer->setInterval(200); // Poll every 200ms
+    connect(m_pollTimer, &QTimer::timeout, this, &TerminalWidget::pollLastLine);
+
+    setupTerminal();
+}
+
+void TerminalWidget::setupTerminal() {
+    // Destroy old terminal if it exists
+    if (m_terminal) {
+        disconnect(m_terminal, &QTermWidget::finished, this, &TerminalWidget::onFinished);
+        delete m_terminal;
+        m_terminal = nullptr;
+    }
+
+    m_terminal = new QTermWidget(0); // 0 = don't start shell automatically
+
     // Configure terminal appearance
     m_terminal->setScrollBarPosition(QTermWidget::ScrollBarRight);
     m_terminal->setColorScheme("Linux");
     m_terminal->setTerminalFont(QFont("Monospace", 10));
     m_terminal->setTerminalOpacity(1.0);
-    // Keep the widget/window alive after the shell exits so the embedded window doesn't vanish.
+    // Keep the widget/window alive after the shell exits so content persists.
     m_terminal->setAutoClose(false);
 
     // Set environment to support colors
@@ -47,15 +64,11 @@ TerminalWidget::TerminalWidget(QObject *parent)
     // Connect signals
     connect(m_terminal, &QTermWidget::finished, this, &TerminalWidget::onFinished);
 
-    // Timer to poll terminal content for status line updates
-    m_pollTimer->setInterval(200); // Poll every 200ms
-    connect(m_pollTimer, &QTimer::timeout, this, &TerminalWidget::pollLastLine);
-
     // Force native window creation
     m_terminal->setAttribute(Qt::WA_NativeWindow);
     m_terminal->winId();
 
-    // Emit window ready after creation
+    // Notify QML that the window handle changed
     QMetaObject::invokeMethod(this, "windowReady", Qt::QueuedConnection);
 }
 
@@ -85,7 +98,9 @@ void TerminalWidget::runCommand(const QString &command) {
 }
 
 void TerminalWidget::runScript(const QString &flakePath, const QString &commitMsg) {
-    if (!m_terminal) return;
+    // Recreate the terminal widget for a clean session.
+    // QTermWidget doesn't reliably support restarting after a session ends.
+    setupTerminal();
 
     m_running = true;
     m_pollTimer->start(); // Start polling for status line updates

@@ -41,6 +41,7 @@ private slots:
     void pollLastLine();
 
 private:
+    void setupTerminal();
     QTermWidget *m_terminal;
     QTimer *m_pollTimer;
     bool m_running;
