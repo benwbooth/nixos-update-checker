@@ -21,6 +21,16 @@ ApplicationWindow {
     property bool packageListExpanded: false
     property bool updateJustCompleted: false  // Track if update just finished successfully
 
+    onOutputExpandedChanged: {
+        if (typeof terminal !== "undefined" && terminal.log)
+            terminal.log("QML: outputExpanded changed to " + outputExpanded)
+    }
+
+    onVisibleChanged: {
+        if (typeof terminal !== "undefined" && terminal.log)
+            terminal.log("QML: root.visible changed to " + visible)
+    }
+
     // Progress tracking for update process
     QtObject {
         id: progressInfo
@@ -292,6 +302,8 @@ ApplicationWindow {
                     var flakePath = checker.get_update_script_path()
                     var commitMsg = checker.get_update_commit_message()
                     if (flakePath) {
+                        terminal.log("=== TRAY: Starting update ===")
+                        terminal.log("  outputExpanded=" + outputExpanded + " root.visible=" + root.visible)
                         terminal.clear()
                         progressInfo.reset()
                         terminal.runScript(flakePath, commitMsg)
@@ -512,6 +524,59 @@ ApplicationWindow {
             }
         }
 
+        // Progress bar for update progress (always visible when running or complete)
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: terminal.running || progressBar.value >= 1.0
+            spacing: 2
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+
+                Label {
+                    id: progressLabel
+                    text: progressInfo.statusText
+                    elide: Text.ElideMiddle
+                    Layout.fillWidth: true
+                    font.family: "monospace"
+                    font.pointSize: 9
+                }
+
+                Label {
+                    text: progressInfo.progressText
+                    font.family: "monospace"
+                    font.pointSize: 9
+                    font.bold: true
+                }
+            }
+
+            ProgressBar {
+                id: progressBar
+                Layout.fillWidth: true
+                from: 0
+                to: 1
+                value: progressInfo.progress
+
+                // Custom styling for better visibility
+                background: Rectangle {
+                    implicitHeight: 6
+                    color: "#e0e0e0"
+                    radius: 3
+                }
+
+                contentItem: Item {
+                    implicitHeight: 6
+                    Rectangle {
+                        width: progressBar.visualPosition * parent.width
+                        height: parent.height
+                        radius: 3
+                        color: progressBar.value >= 1.0 ? "#4CAF50" : "#2196F3"
+                    }
+                }
+            }
+        }
+
         // Output panel with embedded terminal
         ColumnLayout {
             Layout.fillWidth: true
@@ -544,59 +609,6 @@ ApplicationWindow {
                 }
             }
 
-            // Progress bar for update progress
-            ColumnLayout {
-                Layout.fillWidth: true
-                visible: outputExpanded && (terminal.running || progressBar.value >= 1.0)
-                spacing: 2
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 10
-
-                    Label {
-                        id: progressLabel
-                        text: progressInfo.statusText
-                        elide: Text.ElideMiddle
-                        Layout.fillWidth: true
-                        font.family: "monospace"
-                        font.pointSize: 9
-                    }
-
-                    Label {
-                        text: progressInfo.progressText
-                        font.family: "monospace"
-                        font.pointSize: 9
-                        font.bold: true
-                    }
-                }
-
-                ProgressBar {
-                    id: progressBar
-                    Layout.fillWidth: true
-                    from: 0
-                    to: 1
-                    value: progressInfo.progress
-
-                    // Custom styling for better visibility
-                    background: Rectangle {
-                        implicitHeight: 6
-                        color: "#e0e0e0"
-                        radius: 3
-                    }
-
-                    contentItem: Item {
-                        implicitHeight: 6
-                        Rectangle {
-                            width: progressBar.visualPosition * parent.width
-                            height: parent.height
-                            radius: 3
-                            color: progressBar.value >= 1.0 ? "#4CAF50" : "#2196F3"
-                        }
-                    }
-                }
-            }
-
             // Embedded terminal using WindowContainer
             WindowContainer {
                 id: terminalContainer
@@ -606,6 +618,20 @@ ApplicationWindow {
                 Layout.minimumHeight: 300
                 Layout.preferredHeight: 350
                 visible: outputExpanded
+
+                onVisibleChanged: {
+                    terminal.log("QML: terminalContainer.visible changed to " + visible)
+                }
+
+                onWidthChanged: {
+                    if (width === 0 || height === 0)
+                        terminal.log("QML: terminalContainer size now " + width + "x" + height)
+                }
+
+                onHeightChanged: {
+                    if (width === 0 || height === 0)
+                        terminal.log("QML: terminalContainer size now " + width + "x" + height)
+                }
 
                 // Dark background for terminal area
                 Rectangle {
@@ -694,6 +720,8 @@ ApplicationWindow {
                     var flakePath = checker.get_update_script_path()
                     var commitMsg = checker.get_update_commit_message()
                     if (flakePath) {
+                        terminal.log("=== BUTTON: Starting update ===")
+                        terminal.log("  outputExpanded=" + outputExpanded + " root.visible=" + root.visible)
                         terminal.clear()
                         progressInfo.reset()
                         terminal.runScript(flakePath, commitMsg)
@@ -713,6 +741,7 @@ ApplicationWindow {
     // Handle window close - hide instead of quit
     onClosing: function(close) {
         close.accepted = false
+        terminal.log("QML: Window closing (hiding), outputExpanded=" + outputExpanded)
         root.hide()
     }
 

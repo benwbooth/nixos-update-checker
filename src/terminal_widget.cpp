@@ -36,6 +36,8 @@ TerminalWidget::TerminalWidget(QObject *parent)
     m_terminal->setColorScheme("Linux");
     m_terminal->setTerminalFont(QFont("Monospace", 10));
     m_terminal->setTerminalOpacity(1.0);
+    // Keep the widget/window alive after the shell exits so the embedded window doesn't vanish.
+    m_terminal->setAutoClose(false);
 
     // Set environment to support colors
     QStringList env = QProcess::systemEnvironment();
