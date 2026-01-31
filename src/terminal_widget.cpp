@@ -172,6 +172,9 @@ bool TerminalWidget::hasContent() const {
 }
 
 void TerminalWidget::onFinished() {
+    // Guard against being called multiple times (from both poll detection and signal)
+    if (!m_running) return;
+
     debugLog("=== TerminalWidget::onFinished() START ===");
     debugLog(QString("  Log file: %1").arg(debugLogPath()));
 
@@ -297,6 +300,19 @@ void TerminalWidget::pollLastLine() {
             if (!lastLine.isEmpty() && lastLine != m_lastLine) {
                 m_lastLine = lastLine;
                 emit lastLineChanged();
+            }
+        }
+
+        // Detect script completion by looking for the final status markers.
+        // With autoClose=false, QTermWidget doesn't emit finished(), so we
+        // detect completion ourselves by matching the script's output.
+        if (m_running) {
+            // Strip ANSI from full text for reliable matching
+            QString cleanText = allText;
+            cleanText.remove(QRegularExpression("\x1b\\[[0-9;]*m"));
+            if (cleanText.contains("Update complete!") || cleanText.contains("Update failed")) {
+                debugLog("pollLastLine: detected script completion marker");
+                onFinished();
             }
         }
     }
