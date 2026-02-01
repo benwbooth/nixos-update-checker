@@ -27,6 +27,7 @@ pub mod qobject {
         #[qproperty(bool, update_running)]
         #[qproperty(QString, update_output)]
         #[qproperty(QString, update_status_line)]
+        #[qproperty(bool, commit_and_push)]
         type UpdateChecker = super::UpdateCheckerRust;
 
         /// Trigger a manual update check (async - spawns background thread)
@@ -141,6 +142,7 @@ pub struct UpdateCheckerRust {
     update_running: bool,
     update_output: QString,
     update_status_line: QString,
+    commit_and_push: bool,
     // Internal: cached config for is_check_due
     #[allow(dead_code)]
     cached_last_check_timestamp: i64,
@@ -335,6 +337,7 @@ impl qobject::UpdateChecker {
             check_interval_unit: IntervalUnit::from_str(&unit.to_string()),
             last_check_timestamp: existing.last_check_timestamp,
             cached_updates_json: existing.cached_updates_json,
+            commit_and_push: *self.as_ref().commit_and_push(),
         };
 
         if let Err(e) = config.save() {
@@ -381,6 +384,7 @@ impl qobject::UpdateChecker {
                 let tooltip = QString::from(&build_tooltip(&updates, config.last_check_timestamp));
                 self.as_mut().set_tooltip_text(tooltip);
 
+                self.as_mut().set_commit_and_push(config.commit_and_push);
                 self.as_mut().set_status_message(QString::from("Configuration loaded"));
 
                 // Emit signal to update icon based on cached state

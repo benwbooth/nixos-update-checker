@@ -48,21 +48,25 @@ if ! nixos-rebuild switch --flake .; then
 fi
 echo ""
 
-echo "${BOLD}${BLUE}━━━ Committing changes ━━━${NC}"
-# Run git as the original user, not as root
-REAL_USER="${SUDO_USER:-$USER}"
-if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
-    # Use su without - to preserve more env, and pass SSH_AUTH_SOCK for git push
-    su "$REAL_USER" -c "cd '$FLAKE_PATH' && git add -A && git commit -m '$COMMIT_MSG'" || echo "${YELLOW}Nothing to commit${NC}"
-    echo ""
-    echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
-    su "$REAL_USER" -c "export SSH_AUTH_SOCK='$SSH_AUTH_SOCK'; cd '$FLAKE_PATH' && git push" || echo "${YELLOW}Push failed or no remote configured${NC}"
+if [ "$COMMIT_AND_PUSH" = "1" ]; then
+    echo "${BOLD}${BLUE}━━━ Committing changes ━━━${NC}"
+    # Run git as the original user, not as root
+    REAL_USER="${SUDO_USER:-$USER}"
+    if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
+        # Use su without - to preserve more env, and pass SSH_AUTH_SOCK for git push
+        su "$REAL_USER" -c "cd '$FLAKE_PATH' && git add -A && git commit -m '$COMMIT_MSG'" || echo "${YELLOW}Nothing to commit${NC}"
+        echo ""
+        echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
+        su "$REAL_USER" -c "export SSH_AUTH_SOCK='$SSH_AUTH_SOCK'; cd '$FLAKE_PATH' && git push" || echo "${YELLOW}Push failed or no remote configured${NC}"
+    else
+        git add -A
+        git commit -m "$COMMIT_MSG" || echo "${YELLOW}Nothing to commit${NC}"
+        echo ""
+        echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
+        git push || echo "${YELLOW}Push failed or no remote configured${NC}"
+    fi
 else
-    git add -A
-    git commit -m "$COMMIT_MSG" || echo "${YELLOW}Nothing to commit${NC}"
-    echo ""
-    echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
-    git push || echo "${YELLOW}Push failed or no remote configured${NC}"
+    echo "${YELLOW}Skipping commit and push (disabled in settings)${NC}"
 fi
 echo ""
 

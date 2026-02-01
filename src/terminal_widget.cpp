@@ -97,7 +97,7 @@ void TerminalWidget::runCommand(const QString &command) {
     m_terminal->sendText(command + "\n");
 }
 
-void TerminalWidget::runScript(const QString &flakePath, const QString &commitMsg) {
+void TerminalWidget::runScript(const QString &flakePath, const QString &commitMsg, bool commitAndPush) {
     // Recreate the terminal widget for a clean session.
     // QTermWidget doesn't reliably support restarting after a session ends.
     setupTerminal();
@@ -125,10 +125,11 @@ void TerminalWidget::runScript(const QString &flakePath, const QString &commitMs
     // Run pkexec with env to pass variables
     m_terminal->setShellProgram("/bin/sh");
     m_terminal->setArgs({"-c",
-        QString("pkexec env FLAKE_PATH='%1' COMMIT_MSG='%2' SSH_AUTH_SOCK='%3' '%4'")
+        QString("pkexec env FLAKE_PATH='%1' COMMIT_MSG='%2' SSH_AUTH_SOCK='%3' COMMIT_AND_PUSH='%4' '%5'")
             .arg(flakePath)
             .arg(commitMsg)
             .arg(sshAuthSock)
+            .arg(commitAndPush ? "1" : "0")
             .arg(scriptPath)
     });
     m_terminal->startShellProgram();
@@ -187,8 +188,8 @@ void TerminalWidget::onFinished() {
     }
 
     m_pollTimer->stop();
-    pollLastLine();
-    m_running = false;
+    m_running = false;  // Set before pollLastLine to prevent recursive re-entry
+    pollLastLine();     // One final poll to capture the last line
     emit runningChanged();
 
     debugLog("  After runningChanged:");

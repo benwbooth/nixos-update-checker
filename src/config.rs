@@ -62,7 +62,12 @@ pub struct Config {
     /// Cached updates from last check (JSON array)
     #[serde(default)]
     pub cached_updates_json: String,
+    /// Whether to commit and push after updating
+    #[serde(default = "default_true")]
+    pub commit_and_push: bool,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for Config {
     fn default() -> Self {
@@ -72,6 +77,7 @@ impl Default for Config {
             check_interval_unit: IntervalUnit::Hours,
             last_check_timestamp: 0,
             cached_updates_json: String::new(),
+            commit_and_push: true,
         }
     }
 }
@@ -174,6 +180,7 @@ mod tests {
         let config = Config {
             flake_path: "/home/user/nixos".to_string(),
             check_interval: 6,
+            commit_and_push: true,
             check_interval_unit: IntervalUnit::Hours,
             last_check_timestamp: 0,
             cached_updates_json: String::new(),

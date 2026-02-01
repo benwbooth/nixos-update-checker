@@ -306,7 +306,7 @@ ApplicationWindow {
                         terminal.log("  outputExpanded=" + outputExpanded + " root.visible=" + root.visible)
                         terminal.clear()
                         progressInfo.reset()
-                        terminal.runScript(flakePath, commitMsg)
+                        terminal.runScript(flakePath, commitMsg, checker.commit_and_push)
                     }
                 }
             }
@@ -397,6 +397,17 @@ ApplicationWindow {
                     textRole: "text"
                     currentIndex: 0
                     onActivated: autosaveSettings()
+                }
+            }
+
+            Label { text: "" }  // empty cell for grid alignment
+            CheckBox {
+                id: commitAndPushCheckbox
+                text: "Commit and push after update"
+                checked: checker.commit_and_push
+                onToggled: {
+                    checker.commit_and_push = checked
+                    autosaveSettings()
                 }
             }
         }
@@ -724,7 +735,7 @@ ApplicationWindow {
                         terminal.log("  outputExpanded=" + outputExpanded + " root.visible=" + root.visible)
                         terminal.clear()
                         progressInfo.reset()
-                        terminal.runScript(flakePath, commitMsg)
+                        terminal.runScript(flakePath, commitMsg, checker.commit_and_push)
                     }
                 }
             }
