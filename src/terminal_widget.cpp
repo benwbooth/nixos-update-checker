@@ -292,16 +292,20 @@ void TerminalWidget::pollLastLine() {
     m_terminal->setSelectionEnd(0, 0);
 
     if (!allText.isEmpty()) {
-        // Split into lines and find the last non-empty line
-        QStringList lines = allText.split('\n', Qt::SkipEmptyParts);
-        if (!lines.isEmpty()) {
-            QString lastLine = lines.last().trimmed();
-            // Filter out ANSI escape sequences for display
-            lastLine.remove(QRegularExpression("\x1b\\[[0-9;]*m"));
-            if (!lastLine.isEmpty() && lastLine != m_lastLine) {
-                m_lastLine = lastLine;
-                emit lastLineChanged();
+        // Find the last non-empty line (skip blank/whitespace/ANSI-only lines)
+        QStringList lines = allText.split('\n');
+        QString lastLine;
+        for (int i = lines.size() - 1; i >= 0; --i) {
+            QString candidate = lines[i].trimmed();
+            candidate.remove(QRegularExpression("\x1b\\[[0-9;]*m"));
+            if (!candidate.isEmpty()) {
+                lastLine = candidate;
+                break;
             }
+        }
+        if (!lastLine.isEmpty() && lastLine != m_lastLine) {
+            m_lastLine = lastLine;
+            emit lastLineChanged();
         }
 
         // Detect script completion by looking for the final status markers.
