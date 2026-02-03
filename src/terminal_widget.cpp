@@ -97,7 +97,7 @@ void TerminalWidget::runCommand(const QString &command) {
     m_terminal->sendText(command + "\n");
 }
 
-void TerminalWidget::runScript(const QString &flakePath, const QString &commitMsg, bool commitAndPush) {
+void TerminalWidget::runScript(const QString &flakePath, const QString &commitMsg, bool commitAndPush, bool runGcAfterUpdate) {
     // Recreate the terminal widget for a clean session.
     // QTermWidget doesn't reliably support restarting after a session ends.
     setupTerminal();
@@ -125,11 +125,12 @@ void TerminalWidget::runScript(const QString &flakePath, const QString &commitMs
     // Run pkexec with env to pass variables
     m_terminal->setShellProgram("/bin/sh");
     m_terminal->setArgs({"-c",
-        QString("pkexec env FLAKE_PATH='%1' COMMIT_MSG='%2' SSH_AUTH_SOCK='%3' COMMIT_AND_PUSH='%4' '%5'")
+        QString("pkexec env FLAKE_PATH='%1' COMMIT_MSG='%2' SSH_AUTH_SOCK='%3' COMMIT_AND_PUSH='%4' RUN_GC='%5' '%6'")
             .arg(flakePath)
             .arg(commitMsg)
             .arg(sshAuthSock)
             .arg(commitAndPush ? "1" : "0")
+            .arg(runGcAfterUpdate ? "1" : "0")
             .arg(scriptPath)
     });
     m_terminal->startShellProgram();
@@ -300,12 +301,23 @@ void TerminalWidget::pollLastLine() {
             candidate.remove(QRegularExpression("\x1b\\[[0-9;]*m"));
             if (!candidate.isEmpty()) {
                 lastLine = candidate;
+                debugLog(QString("pollLastLine: found non-empty line at index %1: '%2'").arg(i).arg(lastLine));
                 break;
             }
         }
         if (!lastLine.isEmpty() && lastLine != m_lastLine) {
+            debugLog(QString("pollLastLine: updating m_lastLine from '%1' to '%2'").arg(m_lastLine).arg(lastLine));
             m_lastLine = lastLine;
             emit lastLineChanged();
+        } else if (lastLine.isEmpty()) {
+            debugLog(QString("pollLastLine: lastLine is empty! Total lines: %1").arg(lines.size()));
+            // Log last 5 lines for debugging
+            for (int i = qMax(0, lines.size() - 5); i < lines.size(); ++i) {
+                QString raw = lines[i];
+                QString cleaned = raw.trimmed();
+                cleaned.remove(QRegularExpression("\x1b\\[[0-9;]*m"));
+                debugLog(QString("  Line %1 raw length=%2, cleaned='%3'").arg(i).arg(raw.length()).arg(cleaned));
+            }
         }
 
         // Detect script completion by looking for the final status markers.

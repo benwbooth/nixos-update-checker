@@ -65,6 +65,9 @@ pub struct Config {
     /// Whether to commit and push after updating
     #[serde(default = "default_true")]
     pub commit_and_push: bool,
+    /// Whether to run garbage collection after updating
+    #[serde(default)]
+    pub run_gc_after_update: bool,
 }
 
 fn default_true() -> bool { true }
@@ -78,6 +81,7 @@ impl Default for Config {
             last_check_timestamp: 0,
             cached_updates_json: String::new(),
             commit_and_push: true,
+            run_gc_after_update: false,
         }
     }
 }
@@ -181,6 +185,7 @@ mod tests {
             flake_path: "/home/user/nixos".to_string(),
             check_interval: 6,
             commit_and_push: true,
+            run_gc_after_update: false,
             check_interval_unit: IntervalUnit::Hours,
             last_check_timestamp: 0,
             cached_updates_json: String::new(),

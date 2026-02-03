@@ -70,6 +70,12 @@ else
 fi
 echo ""
 
+if [ "$RUN_GC" = "1" ]; then
+    echo "${BOLD}${MAGENTA}━━━ Running garbage collection ━━━${NC}"
+    nix-collect-garbage || echo "${YELLOW}Garbage collection failed${NC}"
+    echo ""
+fi
+
 # Final status - this will be the status line
 echo ""
 if [ "$FAILED" -eq 1 ]; then

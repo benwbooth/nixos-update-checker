@@ -22,7 +22,7 @@ public:
     QString lastLine() const { return m_lastLine; }
 
     Q_INVOKABLE void runCommand(const QString &command);
-    Q_INVOKABLE void runScript(const QString &flakePath, const QString &commitMsg, bool commitAndPush);
+    Q_INVOKABLE void runScript(const QString &flakePath, const QString &commitMsg, bool commitAndPush, bool runGcAfterUpdate);
     Q_INVOKABLE void clear();
     Q_INVOKABLE void show();
     Q_INVOKABLE void hide();

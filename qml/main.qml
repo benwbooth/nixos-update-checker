@@ -306,7 +306,7 @@ ApplicationWindow {
                         terminal.log("  outputExpanded=" + outputExpanded + " root.visible=" + root.visible)
                         terminal.clear()
                         progressInfo.reset()
-                        terminal.runScript(flakePath, commitMsg, checker.commit_and_push)
+                        terminal.runScript(flakePath, commitMsg, checker.commit_and_push, checker.run_gc_after_update)
                     }
                 }
             }
@@ -407,6 +407,17 @@ ApplicationWindow {
                 checked: checker.commit_and_push
                 onToggled: {
                     checker.commit_and_push = checked
+                    autosaveSettings()
+                }
+            }
+
+            Label { text: "" }  // empty cell for grid alignment
+            CheckBox {
+                id: runGcCheckbox
+                text: "Run garbage collection after update"
+                checked: checker.run_gc_after_update
+                onToggled: {
+                    checker.run_gc_after_update = checked
                     autosaveSettings()
                 }
             }
@@ -612,7 +623,17 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: terminal.running ? (terminal.lastLine || "Running update...") : (checker.update_status_line || "")
+                    // Show terminal.lastLine both during and after update (it preserves the final line)
+                    // Only fall back to update_status_line if terminal has no content
+                    text: {
+                        if (terminal.running) {
+                            return terminal.lastLine || "Running update..."
+                        } else if (terminal.lastLine) {
+                            return terminal.lastLine
+                        } else {
+                            return checker.update_status_line || ""
+                        }
+                    }
                     elide: Text.ElideRight
                     Layout.fillWidth: true
                     font.family: "monospace"
@@ -735,7 +756,7 @@ ApplicationWindow {
                         terminal.log("  outputExpanded=" + outputExpanded + " root.visible=" + root.visible)
                         terminal.clear()
                         progressInfo.reset()
-                        terminal.runScript(flakePath, commitMsg, checker.commit_and_push)
+                        terminal.runScript(flakePath, commitMsg, checker.commit_and_push, checker.run_gc_after_update)
                     }
                 }
             }
