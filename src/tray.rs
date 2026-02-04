@@ -90,6 +90,26 @@ pub mod qobject {
         /// Reboot the system
         #[qinvokable]
         fn reboot_system(self: &UpdateChecker);
+
+        /// Clear cached updates from properties and config file (after successful update)
+        #[qinvokable]
+        fn clear_cached_updates(self: Pin<&mut UpdateChecker>);
+
+        /// Find the last non-empty line from terminal text (strips ANSI codes)
+        #[qinvokable]
+        fn find_last_line(self: &UpdateChecker, text: QString) -> QString;
+
+        /// Check if terminal output indicates update completion
+        #[qinvokable]
+        fn check_update_complete(self: &UpdateChecker, text: QString) -> bool;
+
+        /// Get exit code from terminal output (0 = success, 1 = failure)
+        #[qinvokable]
+        fn get_update_exit_code(self: &UpdateChecker, text: QString) -> i32;
+
+        /// Build the full pkexec update command string
+        #[qinvokable]
+        fn build_update_command(self: &UpdateChecker, flake_path: QString, commit_msg: QString, commit_and_push: bool, run_gc: bool) -> QString;
     }
 
     unsafe extern "RustQt" {
@@ -431,6 +451,22 @@ impl qobject::UpdateChecker {
         std::process::exit(0);
     }
 
+    pub fn clear_cached_updates(mut self: Pin<&mut Self>) {
+        self.as_mut().set_has_updates(false);
+        self.as_mut().set_update_count(0);
+        self.as_mut().set_updates_json(QString::from("[]"));
+        self.as_mut().set_update_summary(QString::from(""));
+
+        // Also clear in the config file so reloads don't repopulate
+        if let Ok(mut config) = Config::load() {
+            config.cached_updates_json = "[]".to_string();
+            let _ = config.save();
+        }
+
+        // Update tooltip to reflect no updates
+        self.as_mut().set_tooltip_text(QString::from("NixOS Update Checker - No updates"));
+    }
+
     pub fn clear_output(mut self: Pin<&mut Self>) {
         self.as_mut().set_update_output(QString::from(""));
         self.as_mut().set_update_status_line(QString::from(""));
@@ -527,6 +563,72 @@ impl qobject::UpdateChecker {
             }
         }
         reboot_packages
+    }
+
+    /// Find the last non-empty line from terminal text, stripping ANSI escape codes
+    pub fn find_last_line(&self, text: QString) -> QString {
+        let text_str = text.to_string();
+        let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+        for line in text_str.lines().rev() {
+            let cleaned = ansi_re.replace_all(line.trim(), "").to_string();
+            if !cleaned.is_empty() {
+                return QString::from(&cleaned);
+            }
+        }
+        QString::from("")
+    }
+
+    /// Check if terminal output indicates update completion
+    pub fn check_update_complete(&self, text: QString) -> bool {
+        let text_str = text.to_string();
+        let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+        let clean = ansi_re.replace_all(&text_str, "").to_string();
+        clean.contains("Update complete!") || clean.contains("Update failed")
+    }
+
+    /// Get exit code from terminal output (0 = success, 1 = failure)
+    pub fn get_update_exit_code(&self, text: QString) -> i32 {
+        let text_str = text.to_string();
+        let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+        let clean = ansi_re.replace_all(&text_str, "").to_string();
+        if clean.contains("Update failed") || clean.contains("\u{2717}") {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Build the full pkexec update command string
+    pub fn build_update_command(&self, flake_path: QString, commit_msg: QString, commit_and_push: bool, run_gc: bool) -> QString {
+        let flake = flake_path.to_string();
+        let msg = commit_msg.to_string();
+
+        // Find the script - check dev location first, then installed location
+        let exe_path = std::env::current_exe().unwrap_or_default();
+        let dev_script = exe_path
+            .parent()
+            .map(|p| p.join("../../scripts/nixos-update-checker-update"))
+            .and_then(|p| std::fs::canonicalize(p).ok());
+
+        let script_path = match dev_script {
+            Some(p) => p.to_string_lossy().to_string(),
+            None => "/run/current-system/sw/bin/nixos-update-checker-update".to_string(),
+        };
+
+        // Get SSH_AUTH_SOCK for git push passthrough
+        let ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").unwrap_or_default();
+
+        let cmd = format!(
+            "pkexec env FLAKE_PATH='{}' COMMIT_MSG='{}' SSH_AUTH_SOCK='{}' COMMIT_AND_PUSH='{}' RUN_GC='{}' '{}'",
+            flake,
+            msg,
+            ssh_auth_sock,
+            if commit_and_push { "1" } else { "0" },
+            if run_gc { "1" } else { "0" },
+            script_path,
+        );
+
+        QString::from(&cmd)
     }
 
     /// Reboot the system using loginctl (works without root via polkit)

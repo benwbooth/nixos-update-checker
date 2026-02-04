@@ -9,9 +9,9 @@ import Terminal 1.0
 ApplicationWindow {
     id: root
     visible: false  // Start hidden - show via tray menu
-    // Fixed width, height adjusts for expanded panels
+    // Fixed width, height auto-adjusts to fit content
     width: 975
-    height: 450 + (packageListExpanded ? 150 : 0) + (outputExpanded ? 300 : 0)
+    height: mainContent.implicitHeight + 2 * mainContent.anchors.margins
     minimumWidth: 900
     minimumHeight: 400
     title: "NixOS Update Checker"
@@ -20,16 +20,7 @@ ApplicationWindow {
     property bool outputExpanded: false
     property bool packageListExpanded: false
     property bool updateJustCompleted: false  // Track if update just finished successfully
-
-    onOutputExpandedChanged: {
-        if (typeof terminal !== "undefined" && terminal.log)
-            terminal.log("QML: outputExpanded changed to " + outputExpanded)
-    }
-
-    onVisibleChanged: {
-        if (typeof terminal !== "undefined" && terminal.log)
-            terminal.log("QML: root.visible changed to " + visible)
-    }
+    property string lastLine: ""  // Last non-empty line from terminal output
 
     // Progress tracking for update process
     QtObject {
@@ -262,6 +253,51 @@ ApplicationWindow {
         onTriggered: checker.refresh_last_check_time()
     }
 
+    // Timer to poll terminal output during updates (200ms)
+    Timer {
+        id: terminalPollTimer
+        interval: 200
+        repeat: true
+        running: terminal.running
+        onTriggered: {
+            var text = terminal.getAllText()
+            if (!text) return
+
+            // Update last line for progress display
+            var line = checker.find_last_line(text)
+            if (line && line !== root.lastLine) {
+                root.lastLine = line
+                progressInfo.parseProgress(line)
+            }
+
+            // Check for completion
+            if (checker.check_update_complete(text)) {
+                var exitCode = checker.get_update_exit_code(text)
+                terminal.running = false
+
+                checker.set_update_running(false)
+                checker.set_update_status_line(exitCode === 0 ? "Update completed successfully" : "Update failed with exit code " + exitCode)
+                progressInfo.complete(exitCode === 0)
+                terminal.show()
+
+                // Check for reboot-requiring packages before clearing
+                var needsReboot = exitCode === 0 && checker.check_reboot_required()
+                var rebootPkgs = needsReboot ? checker.get_reboot_packages() : ""
+
+                if (exitCode === 0) {
+                    root.updateJustCompleted = true
+                    checker.clear_cached_updates()
+
+                    if (needsReboot) {
+                        rebootDialog.rebootPackages = rebootPkgs
+                        rebootDialog.open()
+                    }
+                }
+                checker.update_completed()
+            }
+        }
+    }
+
     // Folder dialog for flake path selection
     Platform.FolderDialog {
         id: folderDialog
@@ -302,11 +338,11 @@ ApplicationWindow {
                     var flakePath = checker.get_update_script_path()
                     var commitMsg = checker.get_update_commit_message()
                     if (flakePath) {
-                        terminal.log("=== TRAY: Starting update ===")
-                        terminal.log("  outputExpanded=" + outputExpanded + " root.visible=" + root.visible)
                         terminal.clear()
+                        root.lastLine = ""
                         progressInfo.reset()
-                        terminal.runScript(flakePath, commitMsg, checker.commit_and_push, checker.run_gc_after_update)
+                        var cmd = checker.build_update_command(flakePath, commitMsg, checker.commit_and_push, checker.run_gc_after_update)
+                        terminal.runCommand(cmd)
                     }
                 }
             }
@@ -623,13 +659,11 @@ ApplicationWindow {
                 }
 
                 Label {
-                    // Show terminal.lastLine both during and after update (it preserves the final line)
-                    // Only fall back to update_status_line if terminal has no content
                     text: {
                         if (terminal.running) {
-                            return terminal.lastLine || "Running update..."
-                        } else if (terminal.lastLine) {
-                            return terminal.lastLine
+                            return root.lastLine || "Running update..."
+                        } else if (root.lastLine) {
+                            return root.lastLine
                         } else {
                             return checker.update_status_line || ""
                         }
@@ -651,20 +685,6 @@ ApplicationWindow {
                 Layout.preferredHeight: 350
                 visible: outputExpanded
 
-                onVisibleChanged: {
-                    terminal.log("QML: terminalContainer.visible changed to " + visible)
-                }
-
-                onWidthChanged: {
-                    if (width === 0 || height === 0)
-                        terminal.log("QML: terminalContainer size now " + width + "x" + height)
-                }
-
-                onHeightChanged: {
-                    if (width === 0 || height === 0)
-                        terminal.log("QML: terminalContainer size now " + width + "x" + height)
-                }
-
                 // Dark background for terminal area
                 Rectangle {
                     anchors.fill: parent
@@ -677,57 +697,6 @@ ApplicationWindow {
         // Terminal widget instance
         TerminalWidget {
             id: terminal
-
-            onFinished: function(exitCode) {
-                terminal.log("=== QML onFinished START, exitCode=" + exitCode + " ===")
-                terminal.log("  outputExpanded=" + outputExpanded)
-                terminal.log("  terminalContainer.visible=" + terminalContainer.visible)
-                terminal.log("  terminalContainer.width=" + terminalContainer.width + " height=" + terminalContainer.height)
-                terminal.log("  root.width=" + root.width + " root.height=" + root.height)
-                terminal.log("  terminal.hasContent=" + terminal.hasContent())
-
-                checker.set_update_running(false)
-                checker.set_update_status_line(exitCode === 0 ? "Update completed successfully" : "Update failed with exit code " + exitCode)
-
-                // Update progress bar
-                progressInfo.complete(exitCode === 0)
-
-                // Ensure terminal stays visible
-                terminal.show()
-
-                terminal.log("  After show - terminalContainer.visible=" + terminalContainer.visible)
-                terminal.log("  After show - terminalContainer.width=" + terminalContainer.width + " height=" + terminalContainer.height)
-
-                // Check for reboot-requiring packages before clearing
-                var needsReboot = exitCode === 0 && checker.check_reboot_required()
-                var rebootPkgs = needsReboot ? checker.get_reboot_packages() : ""
-
-                // Clear updates since we just applied them
-                if (exitCode === 0) {
-                    root.updateJustCompleted = true
-                    checker.set_has_updates(false)
-                    checker.set_update_count(0)
-                    checker.set_updates_json("[]")
-
-                    terminal.log("  After clearing updates:")
-                    terminal.log("  terminalContainer.visible=" + terminalContainer.visible)
-                    terminal.log("  terminalContainer.width=" + terminalContainer.width + " height=" + terminalContainer.height)
-                    terminal.log("  outputExpanded=" + outputExpanded)
-                    terminal.log("  root.height=" + root.height)
-
-                    // Show reboot dialog if needed
-                    if (needsReboot) {
-                        rebootDialog.rebootPackages = rebootPkgs
-                        rebootDialog.open()
-                    }
-                }
-                checker.update_completed()
-                terminal.log("=== QML onFinished END ===")
-            }
-
-            onLastLineChanged: {
-                progressInfo.parseProgress(terminal.lastLine)
-            }
 
             onRunningChanged: {
                 checker.set_update_running(terminal.running)
@@ -752,11 +721,11 @@ ApplicationWindow {
                     var flakePath = checker.get_update_script_path()
                     var commitMsg = checker.get_update_commit_message()
                     if (flakePath) {
-                        terminal.log("=== BUTTON: Starting update ===")
-                        terminal.log("  outputExpanded=" + outputExpanded + " root.visible=" + root.visible)
                         terminal.clear()
+                        root.lastLine = ""
                         progressInfo.reset()
-                        terminal.runScript(flakePath, commitMsg, checker.commit_and_push, checker.run_gc_after_update)
+                        var cmd = checker.build_update_command(flakePath, commitMsg, checker.commit_and_push, checker.run_gc_after_update)
+                        terminal.runCommand(cmd)
                     }
                 }
             }
@@ -773,7 +742,6 @@ ApplicationWindow {
     // Handle window close - hide instead of quit
     onClosing: function(close) {
         close.accepted = false
-        terminal.log("QML: Window closing (hiding), outputExpanded=" + outputExpanded)
         root.hide()
     }
 

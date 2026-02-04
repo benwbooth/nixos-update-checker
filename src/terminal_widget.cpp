@@ -3,45 +3,18 @@
 #include <QProcess>
 #include <QDebug>
 #include <QCoreApplication>
-#include <QFile>
-#include <QFileInfo>
-#include <QRegularExpression>
-#include <QStandardPaths>
-#include <QDir>
-#include <QDateTime>
-#include <QTextStream>
-
-static QString debugLogPath() {
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    QDir().mkpath(dir);
-    return dir + "/terminal-debug.log";
-}
-
-static void debugLog(const QString &msg) {
-    QFile f(debugLogPath());
-    if (f.open(QIODevice::Append | QIODevice::Text)) {
-        QTextStream out(&f);
-        out << QDateTime::currentDateTime().toString(Qt::ISODate) << " " << msg << "\n";
-    }
-}
 
 TerminalWidget::TerminalWidget(QObject *parent)
     : QObject(parent)
     , m_terminal(nullptr)
-    , m_pollTimer(new QTimer(this))
     , m_running(false)
 {
-    // Timer to poll terminal content for status line updates
-    m_pollTimer->setInterval(200); // Poll every 200ms
-    connect(m_pollTimer, &QTimer::timeout, this, &TerminalWidget::pollLastLine);
-
     setupTerminal();
 }
 
 void TerminalWidget::setupTerminal() {
     // Destroy old terminal if it exists
     if (m_terminal) {
-        disconnect(m_terminal, &QTermWidget::finished, this, &TerminalWidget::onFinished);
         delete m_terminal;
         m_terminal = nullptr;
     }
@@ -60,9 +33,6 @@ void TerminalWidget::setupTerminal() {
     QStringList env = QProcess::systemEnvironment();
     env << "TERM=xterm-256color";
     m_terminal->setEnvironment(env);
-
-    // Connect signals
-    connect(m_terminal, &QTermWidget::finished, this, &TerminalWidget::onFinished);
 
     // Force native window creation
     m_terminal->setAttribute(Qt::WA_NativeWindow);
@@ -86,24 +56,20 @@ QWindow* TerminalWidget::window() const {
     return nullptr;
 }
 
+void TerminalWidget::setRunning(bool running) {
+    if (m_running != running) {
+        m_running = running;
+        emit runningChanged();
+    }
+}
+
 void TerminalWidget::runCommand(const QString &command) {
     if (!m_terminal) return;
 
-    m_running = true;
-    emit runningChanged();
-
-    // Start a shell and send the command
-    m_terminal->startShellProgram();
-    m_terminal->sendText(command + "\n");
-}
-
-void TerminalWidget::runScript(const QString &flakePath, const QString &commitMsg, bool commitAndPush, bool runGcAfterUpdate) {
-    // Recreate the terminal widget for a clean session.
-    // QTermWidget doesn't reliably support restarting after a session ends.
+    // Recreate the terminal widget for a clean session
     setupTerminal();
 
     m_running = true;
-    m_pollTimer->start(); // Start polling for status line updates
     emit runningChanged();
 
     // Set SHELL env var for pkexec security check
@@ -112,28 +78,25 @@ void TerminalWidget::runScript(const QString &flakePath, const QString &commitMs
     env << "TERM=xterm-256color";
     m_terminal->setEnvironment(env);
 
-    // Find the script - check dev location first, then installed location
-    QString scriptPath = "/run/current-system/sw/bin/nixos-update-checker-update";
-    QString devScriptPath = QCoreApplication::applicationDirPath() + "/../../scripts/nixos-update-checker-update";
-    if (QFile::exists(devScriptPath)) {
-        scriptPath = QFileInfo(devScriptPath).canonicalFilePath();
-    }
-
-    // Get SSH_AUTH_SOCK to pass through for git push
-    QString sshAuthSock = qEnvironmentVariable("SSH_AUTH_SOCK");
-
-    // Run pkexec with env to pass variables
     m_terminal->setShellProgram("/bin/sh");
-    m_terminal->setArgs({"-c",
-        QString("pkexec env FLAKE_PATH='%1' COMMIT_MSG='%2' SSH_AUTH_SOCK='%3' COMMIT_AND_PUSH='%4' RUN_GC='%5' '%6'")
-            .arg(flakePath)
-            .arg(commitMsg)
-            .arg(sshAuthSock)
-            .arg(commitAndPush ? "1" : "0")
-            .arg(runGcAfterUpdate ? "1" : "0")
-            .arg(scriptPath)
-    });
+    m_terminal->setArgs({"-c", command});
     m_terminal->startShellProgram();
+}
+
+QString TerminalWidget::getAllText() {
+    if (!m_terminal) return QString();
+
+    int totalLines = m_terminal->screenLinesCount() + m_terminal->historyLinesCount();
+    int totalCols = m_terminal->screenColumnsCount();
+
+    m_terminal->setSelectionStart(0, 0);
+    m_terminal->setSelectionEnd(totalLines, totalCols);
+    QString allText = m_terminal->selectedText();
+    // Clear selection
+    m_terminal->setSelectionStart(0, 0);
+    m_terminal->setSelectionEnd(0, 0);
+
+    return allText;
 }
 
 void TerminalWidget::clear() {
@@ -143,17 +106,8 @@ void TerminalWidget::clear() {
 }
 
 void TerminalWidget::show() {
-    debugLog("TerminalWidget::show() called");
     if (m_terminal) {
-        debugLog(QString("  Before show - isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
-        if (m_terminal->windowHandle()) {
-            debugLog(QString("  Before show - windowHandle visible:%1").arg(m_terminal->windowHandle()->isVisible()));
-        }
         m_terminal->show();
-        debugLog(QString("  After show - isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
-        if (m_terminal->windowHandle()) {
-            debugLog(QString("  After show - windowHandle visible:%1").arg(m_terminal->windowHandle()->isVisible()));
-        }
     }
 }
 
@@ -164,175 +118,13 @@ void TerminalWidget::hide() {
 }
 
 void TerminalWidget::log(const QString &msg) {
-    debugLog(msg);
+    qDebug() << msg;
 }
 
 bool TerminalWidget::hasContent() const {
     if (!m_terminal) return false;
     int lines = m_terminal->screenLinesCount() + m_terminal->historyLinesCount();
     return lines > 1;
-}
-
-void TerminalWidget::onFinished() {
-    // Guard against being called multiple times (from both poll detection and signal)
-    if (!m_running) return;
-
-    debugLog("=== TerminalWidget::onFinished() START ===");
-    debugLog(QString("  Log file: %1").arg(debugLogPath()));
-
-    if (m_terminal) {
-        debugLog(QString("  m_terminal->isVisible():%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
-        debugLog(QString("  m_terminal->windowHandle():%1").arg((quintptr)m_terminal->windowHandle(), 0, 16));
-        if (m_terminal->windowHandle()) {
-            debugLog(QString("  windowHandle()->isVisible():%1 isExposed:%2").arg(m_terminal->windowHandle()->isVisible()).arg(m_terminal->windowHandle()->isExposed()));
-        }
-    }
-
-    m_pollTimer->stop();
-    m_running = false;  // Set before pollLastLine to prevent recursive re-entry
-    pollLastLine();     // One final poll to capture the last line
-    emit runningChanged();
-
-    debugLog("  After runningChanged:");
-    if (m_terminal) {
-        debugLog(QString("  isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
-        if (m_terminal->windowHandle()) {
-            debugLog(QString("  windowHandle visible:%1").arg(m_terminal->windowHandle()->isVisible()));
-        } else {
-            debugLog("  windowHandle() is NULL!");
-        }
-    }
-
-    int exitCode = 0;
-    if (m_terminal) {
-        int totalLines = m_terminal->screenLinesCount() + m_terminal->historyLinesCount();
-        int totalCols = m_terminal->screenColumnsCount();
-        m_terminal->setSelectionStart(0, 0);
-        m_terminal->setSelectionEnd(totalLines, totalCols);
-        QString allText = m_terminal->selectedText();
-        m_terminal->setSelectionStart(0, 0);
-        m_terminal->setSelectionEnd(0, 0);
-
-        if (allText.contains("Update failed") || allText.contains("✗")) {
-            exitCode = 1;
-        }
-        debugLog(QString("  exitCode:%1").arg(exitCode));
-    }
-
-    debugLog("  About to emit finished()");
-    emit finished(exitCode);
-
-    debugLog("  After emit finished():");
-    if (m_terminal) {
-        debugLog(QString("  isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
-        if (m_terminal->windowHandle()) {
-            debugLog(QString("  windowHandle visible:%1").arg(m_terminal->windowHandle()->isVisible()));
-        } else {
-            debugLog("  windowHandle() is NULL after finished!");
-        }
-    }
-    debugLog("=== TerminalWidget::onFinished() END ===");
-
-    // Delayed checks to catch async changes
-    QTimer::singleShot(100, this, [this]() {
-        debugLog("=== Delayed check (100ms) ===");
-        if (m_terminal) {
-            debugLog(QString("  isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
-            if (m_terminal->windowHandle()) {
-                debugLog(QString("  windowHandle visible:%1 exposed:%2").arg(m_terminal->windowHandle()->isVisible()).arg(m_terminal->windowHandle()->isExposed()));
-            } else {
-                debugLog("  windowHandle() is NULL!");
-            }
-        } else {
-            debugLog("  m_terminal is NULL!");
-        }
-    });
-
-    QTimer::singleShot(500, this, [this]() {
-        debugLog("=== Delayed check (500ms) ===");
-        if (m_terminal) {
-            debugLog(QString("  isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
-            if (m_terminal->windowHandle()) {
-                debugLog(QString("  windowHandle visible:%1 exposed:%2").arg(m_terminal->windowHandle()->isVisible()).arg(m_terminal->windowHandle()->isExposed()));
-            } else {
-                debugLog("  windowHandle() is NULL!");
-            }
-        } else {
-            debugLog("  m_terminal is NULL!");
-        }
-    });
-
-    QTimer::singleShot(2000, this, [this]() {
-        debugLog("=== Delayed check (2000ms) ===");
-        if (m_terminal) {
-            debugLog(QString("  isVisible:%1 isHidden:%2").arg(m_terminal->isVisible()).arg(m_terminal->isHidden()));
-            if (m_terminal->windowHandle()) {
-                debugLog(QString("  windowHandle visible:%1 exposed:%2").arg(m_terminal->windowHandle()->isVisible()).arg(m_terminal->windowHandle()->isExposed()));
-            } else {
-                debugLog("  windowHandle() is NULL!");
-            }
-        } else {
-            debugLog("  m_terminal is NULL!");
-        }
-    });
-}
-
-void TerminalWidget::pollLastLine() {
-    if (!m_terminal) return;
-
-    // Get the last non-empty line from the terminal screen
-    // Use setSelectionStart/End to select all text, then get selectedText
-    int totalLines = m_terminal->screenLinesCount() + m_terminal->historyLinesCount();
-    int totalCols = m_terminal->screenColumnsCount();
-
-    m_terminal->setSelectionStart(0, 0);
-    m_terminal->setSelectionEnd(totalLines, totalCols);
-    QString allText = m_terminal->selectedText();
-    // Clear selection by setting start after end
-    m_terminal->setSelectionStart(0, 0);
-    m_terminal->setSelectionEnd(0, 0);
-
-    if (!allText.isEmpty()) {
-        // Find the last non-empty line (skip blank/whitespace/ANSI-only lines)
-        QStringList lines = allText.split('\n');
-        QString lastLine;
-        for (int i = lines.size() - 1; i >= 0; --i) {
-            QString candidate = lines[i].trimmed();
-            candidate.remove(QRegularExpression("\x1b\\[[0-9;]*m"));
-            if (!candidate.isEmpty()) {
-                lastLine = candidate;
-                debugLog(QString("pollLastLine: found non-empty line at index %1: '%2'").arg(i).arg(lastLine));
-                break;
-            }
-        }
-        if (!lastLine.isEmpty() && lastLine != m_lastLine) {
-            debugLog(QString("pollLastLine: updating m_lastLine from '%1' to '%2'").arg(m_lastLine).arg(lastLine));
-            m_lastLine = lastLine;
-            emit lastLineChanged();
-        } else if (lastLine.isEmpty()) {
-            debugLog(QString("pollLastLine: lastLine is empty! Total lines: %1").arg(lines.size()));
-            // Log last 5 lines for debugging
-            for (int i = qMax(0, lines.size() - 5); i < lines.size(); ++i) {
-                QString raw = lines[i];
-                QString cleaned = raw.trimmed();
-                cleaned.remove(QRegularExpression("\x1b\\[[0-9;]*m"));
-                debugLog(QString("  Line %1 raw length=%2, cleaned='%3'").arg(i).arg(raw.length()).arg(cleaned));
-            }
-        }
-
-        // Detect script completion by looking for the final status markers.
-        // With autoClose=false, QTermWidget doesn't emit finished(), so we
-        // detect completion ourselves by matching the script's output.
-        if (m_running) {
-            // Strip ANSI from full text for reliable matching
-            QString cleanText = allText;
-            cleanText.remove(QRegularExpression("\x1b\\[[0-9;]*m"));
-            if (cleanText.contains("Update complete!") || cleanText.contains("Update failed")) {
-                debugLog("pollLastLine: detected script completion marker");
-                onFinished();
-            }
-        }
-    }
 }
 
 // Register the type with QML - use C linkage so Rust can call it
