@@ -166,6 +166,10 @@ ApplicationWindow {
 
         onCheckingChanged: {
             trayIcon.icon.source = checker.get_icon_path()
+            if (checker.checking) {
+                root.lastLine = ""
+                checker.set_update_status_line("")
+            }
         }
 
         onConfig_loaded: {
