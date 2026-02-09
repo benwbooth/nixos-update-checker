@@ -155,6 +155,9 @@
 
           inherit buildInputs;
 
+          # Keep flake inputs in closure so GC doesn't collect them
+          FLAKE_INPUTS = builtins.concatStringsSep ":" [ "${nixpkgs}" "${rust-overlay}" "${flake-utils}" ];
+
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
 
           # Qt environment variables
