@@ -504,6 +504,7 @@ ApplicationWindow {
                             ? "Update complete!"
                             : (checker.has_updates
                                 ? checker.update_count + (checker.update_count === 1 ? " package" : " packages") + " available"
+                                    + (checker.download_size ? " (" + checker.download_size + " download)" : "")
                                 : "No updates available")
                         color: root.updateJustCompleted ? "#4CAF50" : (checker.has_updates ? "#2196F3" : palette.text)
                     }

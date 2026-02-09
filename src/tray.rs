@@ -29,6 +29,7 @@ pub mod qobject {
         #[qproperty(QString, update_status_line)]
         #[qproperty(bool, commit_and_push)]
         #[qproperty(bool, run_gc_after_update)]
+        #[qproperty(QString, download_size)]
         type UpdateChecker = super::UpdateCheckerRust;
 
         /// Trigger a manual update check (async - spawns background thread)
@@ -144,7 +145,7 @@ use cxx_qt_lib::QString;
 use std::sync::{Arc, Mutex};
 
 use crate::config::{Config, IntervalUnit};
-use crate::flake_checker::{self, FlakeUpdate};
+use crate::flake_checker::{self, FlakeUpdate, CheckResult};
 
 /// Rust implementation of the UpdateChecker QObject
 #[derive(Default)]
@@ -165,6 +166,7 @@ pub struct UpdateCheckerRust {
     update_status_line: QString,
     commit_and_push: bool,
     run_gc_after_update: bool,
+    download_size: QString,
     // Internal: cached config for is_check_due
     #[allow(dead_code)]
     cached_last_check_timestamp: i64,
@@ -221,10 +223,10 @@ fn build_tooltip(updates: &[FlakeUpdate], last_check_timestamp: i64) -> String {
 use once_cell::sync::Lazy;
 
 /// Result from background check thread
-type CheckResult = Result<Vec<FlakeUpdate>, flake_checker::FlakeCheckError>;
+type BgCheckResult = Result<CheckResult, flake_checker::FlakeCheckError>;
 
 /// Global storage for background check result
-static CHECK_RESULT: Lazy<Arc<Mutex<Option<CheckResult>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
+static CHECK_RESULT: Lazy<Arc<Mutex<Option<BgCheckResult>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
 
 /// Cache the last known system path to detect external updates
 static CACHED_SYSTEM_PATH: Lazy<Arc<Mutex<String>>> = Lazy::new(|| Arc::new(Mutex::new(String::new())));
@@ -287,24 +289,27 @@ impl qobject::UpdateChecker {
             let check_timestamp = chrono::Utc::now().timestamp();
 
             match result {
-                Ok(updates) => {
+                Ok(check_result) => {
+                    let updates = &check_result.updates;
                     let has_updates = !updates.is_empty();
                     let count = updates.len() as i32;
-                    let summary = QString::from(&flake_checker::format_updates_tooltip(&updates));
-                    let tooltip = QString::from(&build_tooltip(&updates, check_timestamp));
-                    let json = updates_to_json(&updates);
+                    let summary = QString::from(&flake_checker::format_updates_tooltip(updates));
+                    let tooltip = QString::from(&build_tooltip(updates, check_timestamp));
+                    let json = updates_to_json(updates);
 
                     self.as_mut().set_has_updates(has_updates);
                     self.as_mut().set_update_count(count);
                     self.as_mut().set_update_summary(summary);
                     self.as_mut().set_tooltip_text(tooltip);
                     self.as_mut().set_updates_json(QString::from(&json));
+                    self.as_mut().set_download_size(QString::from(&check_result.download_size));
                     self.as_mut().set_status_message(QString::from("Check complete"));
 
                     // Save to config for persistence
                     if let Ok(mut config) = Config::load() {
                         config.last_check_timestamp = check_timestamp;
                         config.cached_updates_json = json;
+                        config.cached_download_size = check_result.download_size.clone();
                         let _ = config.save();
                     }
                 }
@@ -361,6 +366,7 @@ impl qobject::UpdateChecker {
             cached_updates_json: existing.cached_updates_json,
             commit_and_push: *self.as_ref().commit_and_push(),
             run_gc_after_update: *self.as_ref().run_gc_after_update(),
+            cached_download_size: existing.cached_download_size,
         };
 
         if let Err(e) = config.save() {
@@ -402,6 +408,9 @@ impl qobject::UpdateChecker {
                     let summary = QString::from(&flake_checker::format_updates_tooltip(&updates));
                     self.as_mut().set_update_summary(summary);
                 }
+
+                // Restore cached download size
+                self.as_mut().set_download_size(QString::from(&config.cached_download_size));
 
                 // Set initial tooltip with cached status
                 let tooltip = QString::from(&build_tooltip(&updates, config.last_check_timestamp));
@@ -456,10 +465,12 @@ impl qobject::UpdateChecker {
         self.as_mut().set_update_count(0);
         self.as_mut().set_updates_json(QString::from("[]"));
         self.as_mut().set_update_summary(QString::from(""));
+        self.as_mut().set_download_size(QString::from(""));
 
         // Also clear in the config file so reloads don't repopulate
         if let Ok(mut config) = Config::load() {
             config.cached_updates_json = "[]".to_string();
+            config.cached_download_size = String::new();
             let _ = config.save();
         }
 

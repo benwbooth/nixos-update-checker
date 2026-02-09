@@ -68,6 +68,9 @@ pub struct Config {
     /// Whether to run garbage collection after updating
     #[serde(default)]
     pub run_gc_after_update: bool,
+    /// Cached download size from last check (e.g. "500 MiB")
+    #[serde(default)]
+    pub cached_download_size: String,
 }
 
 fn default_true() -> bool { true }
@@ -82,6 +85,7 @@ impl Default for Config {
             cached_updates_json: String::new(),
             commit_and_push: true,
             run_gc_after_update: false,
+            cached_download_size: String::new(),
         }
     }
 }
@@ -189,6 +193,7 @@ mod tests {
             check_interval_unit: IntervalUnit::Hours,
             last_check_timestamp: 0,
             cached_updates_json: String::new(),
+            cached_download_size: String::new(),
         };
 
         let toml_str = toml::to_string(&config).unwrap();

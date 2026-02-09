@@ -1,3 +1,4 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -106,6 +107,14 @@ impl FlakeUpdate {
         }
         name
     }
+}
+
+/// Result of a dry-build parse: updates + optional download size
+#[derive(Debug, Clone)]
+pub struct CheckResult {
+    pub updates: Vec<FlakeUpdate>,
+    /// e.g. "500 MiB" extracted from "these paths will be fetched (500 MiB):"
+    pub download_size: String,
 }
 
 /// Get the cache directory for a given flake path
@@ -251,7 +260,7 @@ async fn sync_cache_repo(original_path: &Path, cache_path: &Path) -> Result<(), 
 
 /// Check for flake updates without actually applying them
 /// We clone/sync the repo to a user-writable cache directory and check there
-pub async fn check_for_updates(flake_path: &Path) -> Result<Vec<FlakeUpdate>, FlakeCheckError> {
+pub async fn check_for_updates(flake_path: &Path) -> Result<CheckResult, FlakeCheckError> {
     if !flake_path.exists() {
         return Err(FlakeCheckError::PathNotFound(
             flake_path.display().to_string(),
@@ -371,15 +380,23 @@ async fn get_current_system_packages() -> std::collections::HashMap<String, Curr
 }
 
 /// Parse the output of `nixos-rebuild dry-build` to extract packages
-fn parse_dry_build_output(output: &str, current_packages: &std::collections::HashMap<String, CurrentPackageInfo>) -> Result<Vec<FlakeUpdate>, FlakeCheckError> {
+fn parse_dry_build_output(output: &str, current_packages: &std::collections::HashMap<String, CurrentPackageInfo>) -> Result<CheckResult, FlakeCheckError> {
     let mut updates: Vec<FlakeUpdate> = Vec::new();
     let mut in_build_list = false;
+    let mut download_size = String::new();
+
+    // Match "these paths will be fetched (500 MiB):" or similar
+    let size_re = Regex::new(r"these paths will be fetched \(([^)]+)\):").unwrap();
 
     for line in output.lines() {
         let trimmed = line.trim();
 
         // Look for "these derivations will be built:" or "these paths will be fetched:"
         if trimmed.contains("derivations will be built") || trimmed.contains("paths will be fetched") {
+            // Extract download size if present
+            if let Some(caps) = size_re.captures(trimmed) {
+                download_size = caps[1].to_string();
+            }
             in_build_list = true;
             continue;
         }
@@ -441,7 +458,10 @@ fn parse_dry_build_output(output: &str, current_packages: &std::collections::Has
     // Sort by package name
     updates.sort_by(|a, b| a.package_name.to_lowercase().cmp(&b.package_name.to_lowercase()));
 
-    Ok(updates)
+    Ok(CheckResult {
+        updates,
+        download_size,
+    })
 }
 
 /// Check if a package name is an internal/system package that should be filtered out
@@ -596,12 +616,13 @@ these paths will be fetched (500 MiB):
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-glibc-2.38
 "#;
         let current: std::collections::HashMap<String, CurrentPackageInfo> = std::collections::HashMap::new();
-        let updates = parse_dry_build_output(output, &current).unwrap();
-        assert_eq!(updates.len(), 4);
-        assert!(updates.iter().any(|u| u.package_name == "firefox-120.0"));
-        assert!(updates.iter().any(|u| u.package_name == "chromium-119.0"));
-        assert!(updates.iter().any(|u| u.package_name == "nodejs-20.10.0"));
-        assert!(updates.iter().any(|u| u.package_name == "glibc-2.38"));
+        let result = parse_dry_build_output(output, &current).unwrap();
+        assert_eq!(result.updates.len(), 4);
+        assert!(result.updates.iter().any(|u| u.package_name == "firefox-120.0"));
+        assert!(result.updates.iter().any(|u| u.package_name == "chromium-119.0"));
+        assert!(result.updates.iter().any(|u| u.package_name == "nodejs-20.10.0"));
+        assert!(result.updates.iter().any(|u| u.package_name == "glibc-2.38"));
+        assert_eq!(result.download_size, "500 MiB");
     }
 
     #[test]
@@ -615,11 +636,12 @@ these derivations will be built:
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-chromium-119.0.drv
 "#;
         let current: std::collections::HashMap<String, CurrentPackageInfo> = std::collections::HashMap::new();
-        let updates = parse_dry_build_output(output, &current).unwrap();
+        let result = parse_dry_build_output(output, &current).unwrap();
         // Should only have firefox and chromium, not the internal packages
-        assert_eq!(updates.len(), 2);
-        assert!(updates.iter().any(|u| u.package_name == "firefox-120.0"));
-        assert!(updates.iter().any(|u| u.package_name == "chromium-119.0"));
+        assert_eq!(result.updates.len(), 2);
+        assert!(result.updates.iter().any(|u| u.package_name == "firefox-120.0"));
+        assert!(result.updates.iter().any(|u| u.package_name == "chromium-119.0"));
+        assert_eq!(result.download_size, "");
     }
 
     #[test]
@@ -664,10 +686,10 @@ these derivations will be built:
   /nix/store/xyzdefghijklmnopqrstuvwxyz012345-whisper-typer.drv
 "#;
         let current: std::collections::HashMap<String, CurrentPackageInfo> = std::collections::HashMap::new();
-        let updates = parse_dry_build_output(output, &current).unwrap();
+        let result = parse_dry_build_output(output, &current).unwrap();
         // Should only have one entry, preferring the one with version
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].package_name, "whisper-typer-0.1.0");
+        assert_eq!(result.updates.len(), 1);
+        assert_eq!(result.updates[0].package_name, "whisper-typer-0.1.0");
     }
 
     #[test]
@@ -680,12 +702,12 @@ these derivations will be built:
         let mut current: std::collections::HashMap<String, CurrentPackageInfo> = std::collections::HashMap::new();
         current.insert("firefox".to_string(), ("firefox-119.0".to_string(), "oldhas12".to_string()));
 
-        let updates = parse_dry_build_output(output, &current).unwrap();
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].package_name, "firefox-120.0");
-        assert_eq!(updates[0].old_package_name, "firefox-119.0");
-        assert_eq!(updates[0].hash_short, "newhasha");
-        assert_eq!(updates[0].old_hash_short, "oldhas12");
+        let result = parse_dry_build_output(output, &current).unwrap();
+        assert_eq!(result.updates.len(), 1);
+        assert_eq!(result.updates[0].package_name, "firefox-120.0");
+        assert_eq!(result.updates[0].old_package_name, "firefox-119.0");
+        assert_eq!(result.updates[0].hash_short, "newhasha");
+        assert_eq!(result.updates[0].old_hash_short, "oldhas12");
     }
 
     #[test]
