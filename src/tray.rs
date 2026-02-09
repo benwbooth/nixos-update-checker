@@ -430,8 +430,12 @@ impl qobject::UpdateChecker {
                 // Set build info - format timestamp at runtime for local timezone
                 let build_epoch: i64 = env!("BUILD_TIMESTAMP_EPOCH").parse().unwrap_or(0);
                 let build_time = if build_epoch > 0 {
+                    let tz: chrono_tz::Tz = iana_time_zone::get_timezone()
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(chrono_tz::UTC);
                     chrono::DateTime::from_timestamp(build_epoch, 0)
-                        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S %Z").to_string())
+                        .map(|dt| dt.with_timezone(&tz).format("%Y-%m-%d %H:%M:%S %Z").to_string())
                         .unwrap_or_else(|| "unknown".to_string())
                 } else {
                     "unknown".to_string()
