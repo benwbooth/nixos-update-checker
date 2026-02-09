@@ -58,6 +58,21 @@ fn get_qt_libexec_path() -> String {
 }
 
 fn main() {
+    // Emit build info env vars
+    let git_hash = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    println!("cargo:rustc-env=BUILD_GIT_HASH={}", git_hash);
+
+    let build_time = std::process::Command::new("date")
+        .arg("+%Y-%m-%d %H:%M:%S %Z")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    println!("cargo:rustc-env=BUILD_TIMESTAMP={}", build_time);
+
     // Get qtermwidget paths from environment
     let qtermwidget_include = env::var("QTERMWIDGET_INCLUDE_PATH")
         .unwrap_or_else(|_| "/usr/include".to_string());

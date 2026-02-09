@@ -109,12 +109,14 @@ impl FlakeUpdate {
     }
 }
 
-/// Result of a dry-build parse: updates + optional download size
+/// Result of a dry-build parse: updates + optional download/unpacked sizes
 #[derive(Debug, Clone)]
 pub struct CheckResult {
     pub updates: Vec<FlakeUpdate>,
-    /// e.g. "500 MiB" extracted from "these paths will be fetched (500 MiB):"
+    /// e.g. "1174.94 MiB" from "these 42 paths will be fetched (1174.94 MiB download, 4811.63 MiB unpacked):"
     pub download_size: String,
+    /// e.g. "4811.63 MiB"
+    pub unpacked_size: String,
 }
 
 /// Get the cache directory for a given flake path
@@ -384,18 +386,21 @@ fn parse_dry_build_output(output: &str, current_packages: &std::collections::Has
     let mut updates: Vec<FlakeUpdate> = Vec::new();
     let mut in_build_list = false;
     let mut download_size = String::new();
+    let mut unpacked_size = String::new();
 
-    // Match "these paths will be fetched (500 MiB):" or similar
-    let size_re = Regex::new(r"these paths will be fetched \(([^)]+)\):").unwrap();
+    // Match nix format: "these 42 paths will be fetched (1174.94 MiB download, 4811.63 MiB unpacked):"
+    // Also handles singular: "this path will be fetched (0.02 MiB download, 0.06 MiB unpacked):"
+    let size_re = Regex::new(r"will be fetched \(([\d.]+ \S+) download, ([\d.]+ \S+) unpacked\)").unwrap();
 
     for line in output.lines() {
         let trimmed = line.trim();
 
         // Look for "these derivations will be built:" or "these paths will be fetched:"
-        if trimmed.contains("derivations will be built") || trimmed.contains("paths will be fetched") {
-            // Extract download size if present
+        if trimmed.contains("derivations will be built") || trimmed.contains("will be fetched") {
+            // Extract download and unpacked sizes if present
             if let Some(caps) = size_re.captures(trimmed) {
                 download_size = caps[1].to_string();
+                unpacked_size = caps[2].to_string();
             }
             in_build_list = true;
             continue;
@@ -461,6 +466,7 @@ fn parse_dry_build_output(output: &str, current_packages: &std::collections::Has
     Ok(CheckResult {
         updates,
         download_size,
+        unpacked_size,
     })
 }
 
@@ -612,7 +618,7 @@ these 3 derivations will be built:
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-firefox-120.0.drv
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-chromium-119.0.drv
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-nodejs-20.10.0.drv
-these paths will be fetched (500 MiB):
+these 1 paths will be fetched (500.00 MiB download, 1500.00 MiB unpacked):
   /nix/store/abcdefghijklmnopqrstuvwxyz012345-glibc-2.38
 "#;
         let current: std::collections::HashMap<String, CurrentPackageInfo> = std::collections::HashMap::new();
@@ -622,7 +628,8 @@ these paths will be fetched (500 MiB):
         assert!(result.updates.iter().any(|u| u.package_name == "chromium-119.0"));
         assert!(result.updates.iter().any(|u| u.package_name == "nodejs-20.10.0"));
         assert!(result.updates.iter().any(|u| u.package_name == "glibc-2.38"));
-        assert_eq!(result.download_size, "500 MiB");
+        assert_eq!(result.download_size, "500.00 MiB");
+        assert_eq!(result.unpacked_size, "1500.00 MiB");
     }
 
     #[test]

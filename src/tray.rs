@@ -30,6 +30,8 @@ pub mod qobject {
         #[qproperty(bool, commit_and_push)]
         #[qproperty(bool, run_gc_after_update)]
         #[qproperty(QString, download_size)]
+        #[qproperty(QString, unpacked_size)]
+        #[qproperty(QString, build_info)]
         type UpdateChecker = super::UpdateCheckerRust;
 
         /// Trigger a manual update check (async - spawns background thread)
@@ -167,6 +169,8 @@ pub struct UpdateCheckerRust {
     commit_and_push: bool,
     run_gc_after_update: bool,
     download_size: QString,
+    unpacked_size: QString,
+    build_info: QString,
     // Internal: cached config for is_check_due
     #[allow(dead_code)]
     cached_last_check_timestamp: i64,
@@ -203,7 +207,7 @@ fn format_relative_time(timestamp: i64) -> String {
 }
 
 /// Build tooltip text with last check time and update status
-fn build_tooltip(updates: &[FlakeUpdate], last_check_timestamp: i64) -> String {
+fn build_tooltip(updates: &[FlakeUpdate], last_check_timestamp: i64, download_size: &str, unpacked_size: &str) -> String {
     let last_checked = format_relative_time(last_check_timestamp);
 
     if updates.is_empty() {
@@ -212,9 +216,17 @@ fn build_tooltip(updates: &[FlakeUpdate], last_check_timestamp: i64) -> String {
             last_checked
         )
     } else {
+        let size_info = if !download_size.is_empty() && !unpacked_size.is_empty() {
+            format!("\n({} download, {} unpacked)", download_size, unpacked_size)
+        } else if !download_size.is_empty() {
+            format!("\n({} download)", download_size)
+        } else {
+            String::new()
+        };
         format!(
-            "NixOS Update Checker\n{}\nLast checked: {}",
+            "NixOS Update Checker\n{}{}\nLast checked: {}",
             flake_checker::format_updates_tooltip(updates),
+            size_info,
             last_checked
         )
     }
@@ -294,7 +306,7 @@ impl qobject::UpdateChecker {
                     let has_updates = !updates.is_empty();
                     let count = updates.len() as i32;
                     let summary = QString::from(&flake_checker::format_updates_tooltip(updates));
-                    let tooltip = QString::from(&build_tooltip(updates, check_timestamp));
+                    let tooltip = QString::from(&build_tooltip(updates, check_timestamp, &check_result.download_size, &check_result.unpacked_size));
                     let json = updates_to_json(updates);
 
                     self.as_mut().set_has_updates(has_updates);
@@ -303,6 +315,7 @@ impl qobject::UpdateChecker {
                     self.as_mut().set_tooltip_text(tooltip);
                     self.as_mut().set_updates_json(QString::from(&json));
                     self.as_mut().set_download_size(QString::from(&check_result.download_size));
+                    self.as_mut().set_unpacked_size(QString::from(&check_result.unpacked_size));
                     self.as_mut().set_status_message(QString::from("Check complete"));
 
                     // Save to config for persistence
@@ -310,6 +323,7 @@ impl qobject::UpdateChecker {
                         config.last_check_timestamp = check_timestamp;
                         config.cached_updates_json = json;
                         config.cached_download_size = check_result.download_size.clone();
+                        config.cached_unpacked_size = check_result.unpacked_size.clone();
                         let _ = config.save();
                     }
                 }
@@ -367,6 +381,7 @@ impl qobject::UpdateChecker {
             commit_and_push: *self.as_ref().commit_and_push(),
             run_gc_after_update: *self.as_ref().run_gc_after_update(),
             cached_download_size: existing.cached_download_size,
+            cached_unpacked_size: existing.cached_unpacked_size,
         };
 
         if let Err(e) = config.save() {
@@ -409,15 +424,24 @@ impl qobject::UpdateChecker {
                     self.as_mut().set_update_summary(summary);
                 }
 
-                // Restore cached download size
+                // Restore cached download/unpacked sizes
                 self.as_mut().set_download_size(QString::from(&config.cached_download_size));
+                self.as_mut().set_unpacked_size(QString::from(&config.cached_unpacked_size));
 
                 // Set initial tooltip with cached status
-                let tooltip = QString::from(&build_tooltip(&updates, config.last_check_timestamp));
+                let tooltip = QString::from(&build_tooltip(&updates, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size));
                 self.as_mut().set_tooltip_text(tooltip);
 
                 self.as_mut().set_commit_and_push(config.commit_and_push);
                 self.as_mut().set_run_gc_after_update(config.run_gc_after_update);
+
+                // Set build info
+                self.as_mut().set_build_info(QString::from(&format!(
+                    "{} · {}",
+                    env!("BUILD_GIT_HASH"),
+                    env!("BUILD_TIMESTAMP"),
+                )));
+
                 self.as_mut().set_status_message(QString::from("Configuration loaded"));
 
                 // Emit signal to update icon based on cached state
@@ -466,11 +490,13 @@ impl qobject::UpdateChecker {
         self.as_mut().set_updates_json(QString::from("[]"));
         self.as_mut().set_update_summary(QString::from(""));
         self.as_mut().set_download_size(QString::from(""));
+        self.as_mut().set_unpacked_size(QString::from(""));
 
         // Also clear in the config file so reloads don't repopulate
         if let Ok(mut config) = Config::load() {
             config.cached_updates_json = "[]".to_string();
             config.cached_download_size = String::new();
+            config.cached_unpacked_size = String::new();
             let _ = config.save();
         }
 
@@ -523,7 +549,7 @@ impl qobject::UpdateChecker {
 
                 // Also update the tooltip
                 let updates = updates_from_json(&config.cached_updates_json);
-                let tooltip = build_tooltip(&updates, config.last_check_timestamp);
+                let tooltip = build_tooltip(&updates, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size);
                 self.as_mut().set_tooltip_text(QString::from(&tooltip));
             }
         }
