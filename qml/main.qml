@@ -371,6 +371,11 @@ ApplicationWindow {
             Platform.MenuSeparator {}
 
             Platform.MenuItem {
+                text: checker.build_info || "NixOS Update Checker"
+                enabled: false
+            }
+
+            Platform.MenuItem {
                 text: qsTr("Quit")
                 onTriggered: checker.quit_app()
             }

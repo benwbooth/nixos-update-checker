@@ -216,17 +216,9 @@ fn build_tooltip(updates: &[FlakeUpdate], last_check_timestamp: i64, download_si
             last_checked
         )
     } else {
-        let size_info = if !download_size.is_empty() && !unpacked_size.is_empty() {
-            format!("\n({} download, {} unpacked)", download_size, unpacked_size)
-        } else if !download_size.is_empty() {
-            format!("\n({} download)", download_size)
-        } else {
-            String::new()
-        };
         format!(
-            "NixOS Update Checker\n{}{}\nLast checked: {}",
-            flake_checker::format_updates_tooltip(updates),
-            size_info,
+            "NixOS Update Checker\n{}\nLast checked: {}",
+            flake_checker::format_updates_tooltip(updates, download_size, unpacked_size),
             last_checked
         )
     }
@@ -305,7 +297,7 @@ impl qobject::UpdateChecker {
                     let updates = &check_result.updates;
                     let has_updates = !updates.is_empty();
                     let count = updates.len() as i32;
-                    let summary = QString::from(&flake_checker::format_updates_tooltip(updates));
+                    let summary = QString::from(&flake_checker::format_updates_tooltip(updates, &check_result.download_size, &check_result.unpacked_size));
                     let tooltip = QString::from(&build_tooltip(updates, check_timestamp, &check_result.download_size, &check_result.unpacked_size));
                     let json = updates_to_json(updates);
 
@@ -420,7 +412,7 @@ impl qobject::UpdateChecker {
                 self.as_mut().set_updates_json(QString::from(&config.cached_updates_json));
 
                 if has_updates {
-                    let summary = QString::from(&flake_checker::format_updates_tooltip(&updates));
+                    let summary = QString::from(&flake_checker::format_updates_tooltip(&updates, &config.cached_download_size, &config.cached_unpacked_size));
                     self.as_mut().set_update_summary(summary);
                 }
 
@@ -435,11 +427,19 @@ impl qobject::UpdateChecker {
                 self.as_mut().set_commit_and_push(config.commit_and_push);
                 self.as_mut().set_run_gc_after_update(config.run_gc_after_update);
 
-                // Set build info
+                // Set build info - format timestamp at runtime for local timezone
+                let build_epoch: i64 = env!("BUILD_TIMESTAMP_EPOCH").parse().unwrap_or(0);
+                let build_time = if build_epoch > 0 {
+                    chrono::DateTime::from_timestamp(build_epoch, 0)
+                        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S %Z").to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                } else {
+                    "unknown".to_string()
+                };
                 self.as_mut().set_build_info(QString::from(&format!(
-                    "{} · {}",
+                    "Build Version: {} · {}",
                     env!("BUILD_GIT_HASH"),
-                    env!("BUILD_TIMESTAMP"),
+                    build_time,
                 )));
 
                 self.as_mut().set_status_message(QString::from("Configuration loaded"));

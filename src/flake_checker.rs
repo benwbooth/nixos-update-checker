@@ -561,15 +561,23 @@ pub fn generate_commit_message(updates: &[FlakeUpdate]) -> String {
 }
 
 /// Format updates for tooltip display
-pub fn format_updates_tooltip(updates: &[FlakeUpdate]) -> String {
+pub fn format_updates_tooltip(updates: &[FlakeUpdate], download_size: &str, unpacked_size: &str) -> String {
     if updates.is_empty() {
         return "No updates available".to_string();
     }
 
-    let header = if updates.len() == 1 {
-        "1 package to update:".to_string()
+    let size_info = if !download_size.is_empty() && !unpacked_size.is_empty() {
+        format!(" ({} download, {} unpacked)", download_size, unpacked_size)
+    } else if !download_size.is_empty() {
+        format!(" ({} download)", download_size)
     } else {
-        format!("{} packages to update:", updates.len())
+        String::new()
+    };
+
+    let header = if updates.len() == 1 {
+        format!("1 package to update{}:", size_info)
+    } else {
+        format!("{} packages to update{}:", updates.len(), size_info)
     };
 
     // Show first few packages, truncate if too many

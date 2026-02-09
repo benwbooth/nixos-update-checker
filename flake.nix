@@ -96,6 +96,8 @@
             # QTermWidget paths for embedding terminal
             export QTERMWIDGET_INCLUDE_PATH="${qtermwidget}/include"
             export QTERMWIDGET_LIB_PATH="${qtermwidget}/lib"
+            # Pass git hash to build.rs
+            export BUILD_GIT_HASH="${self.shortRev or self.dirtyShortRev or "dirty"}"
           '';
 
           desktopItems = [

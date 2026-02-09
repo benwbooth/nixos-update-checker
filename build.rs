@@ -59,19 +59,26 @@ fn get_qt_libexec_path() -> String {
 
 fn main() {
     // Emit build info env vars
-    let git_hash = std::process::Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    // Check BUILD_GIT_HASH env var first (set by nix), then try git
+    let git_hash = env::var("BUILD_GIT_HASH").ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=BUILD_GIT_HASH={}", git_hash);
 
-    let build_time = std::process::Command::new("date")
-        .arg("+%Y-%m-%d %H:%M:%S %Z")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    println!("cargo:rustc-env=BUILD_TIMESTAMP={}", build_time);
+    // Store build time as unix timestamp - formatted at runtime with local timezone
+    let build_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+    println!("cargo:rustc-env=BUILD_TIMESTAMP_EPOCH={}", build_epoch);
 
     // Get qtermwidget paths from environment
     let qtermwidget_include = env::var("QTERMWIDGET_INCLUDE_PATH")
