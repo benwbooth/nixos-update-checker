@@ -9,9 +9,8 @@ import Terminal 1.0
 ApplicationWindow {
     id: root
     visible: false  // Start hidden - show via tray menu
-    // Fixed width, height auto-adjusts to fit content
     width: 975
-    height: mainContent.implicitHeight + 2 * mainContent.anchors.margins
+    height: 700
     minimumWidth: 900
     minimumHeight: 400
     title: "NixOS Update Checker"
@@ -480,6 +479,7 @@ ApplicationWindow {
         GroupBox {
             title: "Status"
             Layout.fillWidth: true
+            Layout.fillHeight: true
 
             ColumnLayout {
                 anchors.fill: parent
@@ -528,7 +528,8 @@ ApplicationWindow {
                 // Expandable package list
                 ScrollView {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 120
+                    Layout.fillHeight: true
+                    Layout.minimumHeight: 80
                     visible: packageListExpanded && checker.has_updates
 
                     ListView {
