@@ -480,6 +480,7 @@ ApplicationWindow {
             title: "Status"
             Layout.fillWidth: true
             Layout.fillHeight: true
+            Layout.minimumHeight: font.pixelSize * 5 * 1.6 + 40
             clip: true
 
             ColumnLayout {
