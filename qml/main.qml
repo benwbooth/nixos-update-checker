@@ -480,6 +480,7 @@ ApplicationWindow {
             title: "Status"
             Layout.fillWidth: true
             Layout.fillHeight: true
+            clip: true
 
             ColumnLayout {
                 anchors.fill: parent
@@ -528,8 +529,8 @@ ApplicationWindow {
                 // Expandable package list
                 ScrollView {
                     Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.minimumHeight: 80
+                    Layout.fillHeight: packageListExpanded && checker.has_updates
+                    Layout.minimumHeight: packageListExpanded && checker.has_updates ? 80 : 0
                     visible: packageListExpanded && checker.has_updates
 
                     ListView {
@@ -600,6 +601,9 @@ ApplicationWindow {
                         }
                     }
                 }
+
+                // Spacer to push content to top
+                Item { Layout.fillHeight: true }
             }
         }
 
