@@ -171,6 +171,13 @@ ApplicationWindow {
             }
         }
 
+        onUpdate_runningChanged: {
+            trayIcon.icon.source = checker.get_icon_path()
+            if (checker.update_running) {
+                checker.tooltip_text = "NixOS Update Checker\nUpdate in progress..."
+            }
+        }
+
         onConfig_loaded: {
             flakePathField.text = checker.flake_path
             intervalSpinBox.value = checker.check_interval
@@ -271,6 +278,11 @@ ApplicationWindow {
             if (line && line !== root.lastLine) {
                 root.lastLine = line
                 progressInfo.parseProgress(line)
+
+                // Update tray tooltip with progress
+                if (progressInfo.progressText) {
+                    checker.tooltip_text = "NixOS Update Checker\nUpdate in progress (" + progressInfo.progressText + ")"
+                }
             }
 
             // Check for completion

@@ -475,7 +475,9 @@ impl qobject::UpdateChecker {
     }
 
     pub fn get_icon_path(&self) -> QString {
-        if *self.checking() {
+        if *self.update_running() {
+            QString::from("qrc:/icons/nix-flake-updating.svg")
+        } else if *self.checking() {
             QString::from("qrc:/icons/nix-flake-checking.svg")
         } else if *self.has_updates() {
             QString::from("qrc:/icons/nix-flake-update.svg")
@@ -551,10 +553,12 @@ impl qobject::UpdateChecker {
                 let relative_time = format_relative_time(config.last_check_timestamp);
                 self.as_mut().set_last_check_time(QString::from(&relative_time));
 
-                // Also update the tooltip
-                let updates = updates_from_json(&config.cached_updates_json);
-                let tooltip = build_tooltip(&updates, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size);
-                self.as_mut().set_tooltip_text(QString::from(&tooltip));
+                // Don't overwrite tooltip during an active update
+                if !*self.as_ref().update_running() {
+                    let updates = updates_from_json(&config.cached_updates_json);
+                    let tooltip = build_tooltip(&updates, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size);
+                    self.as_mut().set_tooltip_text(QString::from(&tooltip));
+                }
             }
         }
     }
