@@ -738,6 +738,12 @@ ApplicationWindow {
 
             onRunningChanged: {
                 checker.set_update_running(terminal.running)
+                // Set icon directly to avoid signal timing issues
+                if (terminal.running) {
+                    trayIcon.icon.source = "qrc:/icons/nix-flake-updating.svg"
+                } else {
+                    trayIcon.icon.source = checker.get_icon_path()
+                }
             }
         }
 
