@@ -156,7 +156,10 @@ ApplicationWindow {
         }
 
         onUpdates_changed: {
-            trayIcon.icon.source = checker.get_icon_path()
+            // Don't overwrite green icon during updates
+            if (!checker.update_running) {
+                trayIcon.icon.source = checker.get_icon_path()
+            }
             // Reset "Update complete!" status when new updates are found
             if (checker.has_updates) {
                 root.updateJustCompleted = false
@@ -164,17 +167,22 @@ ApplicationWindow {
         }
 
         onCheckingChanged: {
-            trayIcon.icon.source = checker.get_icon_path()
+            // Don't overwrite green icon during updates
+            if (!checker.update_running) {
+                trayIcon.icon.source = checker.get_icon_path()
+            }
             if (checker.checking) {
                 root.lastLine = ""
-                checker.set_update_status_line("")
+                checker.update_status_line = ""
             }
         }
 
         onUpdate_runningChanged: {
-            trayIcon.icon.source = checker.get_icon_path()
             if (checker.update_running) {
+                trayIcon.icon.source = "qrc:/icons/nix-flake-updating.svg"
                 checker.tooltip_text = "NixOS Update Checker\nUpdate in progress..."
+            } else {
+                trayIcon.icon.source = checker.get_icon_path()
             }
         }
 
@@ -290,8 +298,8 @@ ApplicationWindow {
                 var exitCode = checker.get_update_exit_code(text)
                 terminal.running = false
 
-                checker.set_update_running(false)
-                checker.set_update_status_line(exitCode === 0 ? "Update completed successfully" : "Update failed with exit code " + exitCode)
+                checker.update_running = false
+                checker.update_status_line = exitCode === 0 ? "Update completed successfully" : "Update failed with exit code " + exitCode
                 progressInfo.complete(exitCode === 0)
                 terminal.show()
 
@@ -737,13 +745,7 @@ ApplicationWindow {
             id: terminal
 
             onRunningChanged: {
-                checker.set_update_running(terminal.running)
-                // Set icon directly to avoid signal timing issues
-                if (terminal.running) {
-                    trayIcon.icon.source = "qrc:/icons/nix-flake-updating.svg"
-                } else {
-                    trayIcon.icon.source = checker.get_icon_path()
-                }
+                checker.update_running = terminal.running
             }
         }
 
