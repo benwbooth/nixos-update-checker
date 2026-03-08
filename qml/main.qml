@@ -160,9 +160,12 @@ ApplicationWindow {
             if (!checker.update_running) {
                 trayIcon.icon.source = checker.get_icon_path()
             }
-            // Reset "Update complete!" status when new updates are found
+            // Reset "Update complete!" status and progress bar when new updates are found
             if (checker.has_updates) {
                 root.updateJustCompleted = false
+                progressInfo.progress = 0.0
+                progressInfo.progressText = ""
+                progressInfo.statusText = ""
             }
         }
 
