@@ -70,9 +70,12 @@ else
 fi
 echo ""
 
-if [ "$RUN_GC" = "1" ]; then
+if [ "$RUN_GC" = "1" ] && [ "$FAILED" -eq 0 ]; then
     echo "${BOLD}${MAGENTA}━━━ Running garbage collection ━━━${NC}"
     nix-collect-garbage || echo "${YELLOW}Garbage collection failed${NC}"
+    echo ""
+elif [ "$RUN_GC" = "1" ] && [ "$FAILED" -eq 1 ]; then
+    echo "${YELLOW}Skipping garbage collection due to failed update${NC}"
     echo ""
 fi
 
