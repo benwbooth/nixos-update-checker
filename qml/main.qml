@@ -800,13 +800,12 @@ ApplicationWindow {
         title: "Reboot Required"
         modal: true
         anchors.centerIn: parent
-        width: 400
-        standardButtons: Dialog.Yes | Dialog.No
+        width: 450
+        height: 320
 
         property string rebootPackages: ""
 
-        ColumnLayout {
-            anchors.fill: parent
+        contentItem: ColumnLayout {
             spacing: 10
 
             Label {
@@ -815,24 +814,47 @@ ApplicationWindow {
                 Layout.fillWidth: true
             }
 
-            Label {
-                text: rebootDialog.rebootPackages
-                font.bold: true
-                wrapMode: Text.WordWrap
+            ScrollView {
                 Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumHeight: 80
+
+                ListView {
+                    clip: true
+                    model: rebootDialog.rebootPackages ? rebootDialog.rebootPackages.split(", ") : []
+                    delegate: Label {
+                        text: "  \u2022 " + modelData
+                        font.bold: true
+                        font.family: "monospace"
+                        width: ListView.view.width
+                        padding: 2
+                    }
+                }
             }
 
             Label {
                 text: "Would you like to reboot now?"
                 Layout.fillWidth: true
             }
-        }
 
-        onAccepted: {
-            // Execute reboot command
-            Qt.callLater(function() {
-                checker.reboot_system()
-            })
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Yes"
+                    onClicked: {
+                        rebootDialog.close()
+                        Qt.callLater(function() {
+                            checker.reboot_system()
+                        })
+                    }
+                }
+                Button {
+                    text: "No"
+                    onClicked: rebootDialog.close()
+                }
+            }
         }
     }
 }
