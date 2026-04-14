@@ -49,6 +49,10 @@
           qt6.qttools
           libGL
           lxqt.qtermwidget
+          kdePackages.qqc2-desktop-style
+          kdePackages.plasma-integration
+          kdePackages.breeze
+          kdePackages.kio
         ];
 
         # Runtime dependencies for the update script
