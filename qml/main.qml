@@ -369,6 +369,9 @@ ApplicationWindow {
                         progressInfo.reset()
                         var cmd = checker.build_update_command(flakePath, commitMsg, checker.commit_and_push, checker.run_gc_after_update)
                         terminal.runCommand(cmd)
+                        if (outputExpanded) {
+                            Qt.callLater(terminal.focusTerminal)
+                        }
                     }
                 }
             }
@@ -699,7 +702,12 @@ ApplicationWindow {
                     text: outputExpanded ? "▼" : "▶"
                     flat: true
                     implicitWidth: 30
-                    onClicked: outputExpanded = !outputExpanded
+                    onClicked: {
+                        outputExpanded = !outputExpanded
+                        if (outputExpanded) {
+                            Qt.callLater(terminal.focusTerminal)
+                        }
+                    }
                 }
 
                 Label {
@@ -733,6 +741,20 @@ ApplicationWindow {
                 Layout.minimumHeight: 300
                 Layout.preferredHeight: 350
                 visible: outputExpanded
+                focus: true
+                activeFocusOnTab: true
+
+                onVisibleChanged: {
+                    if (visible) {
+                        Qt.callLater(terminal.focusTerminal)
+                    }
+                }
+
+                onActiveFocusChanged: {
+                    if (activeFocus) {
+                        terminal.focusTerminal()
+                    }
+                }
 
                 // Dark background for terminal area
                 Rectangle {
@@ -775,6 +797,9 @@ ApplicationWindow {
                         progressInfo.reset()
                         var cmd = checker.build_update_command(flakePath, commitMsg, checker.commit_and_push, checker.run_gc_after_update)
                         terminal.runCommand(cmd)
+                        if (outputExpanded) {
+                            Qt.callLater(terminal.focusTerminal)
+                        }
                     }
                 }
             }

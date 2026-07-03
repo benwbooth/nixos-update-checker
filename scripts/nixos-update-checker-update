@@ -12,6 +12,29 @@ fi
 # Track if any step fails
 FAILED=0
 
+find_ssh_agent_socket() {
+    if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ]; then
+        return
+    fi
+
+    INVOKING_UID="${ORIGINAL_UID:-${PKEXEC_UID:-}}"
+    if [ -z "$INVOKING_UID" ]; then
+        return
+    fi
+
+    for socket in \
+        "/run/user/$INVOKING_UID/ssh-agent" \
+        "/run/user/$INVOKING_UID/keyring/ssh" \
+        "/run/user/$INVOKING_UID/gnupg/S.gpg-agent.ssh"
+    do
+        if [ -S "$socket" ]; then
+            SSH_AUTH_SOCK="$socket"
+            export SSH_AUTH_SOCK
+            return
+        fi
+    done
+}
+
 # ANSI color codes
 BOLD=$'\033[1m'
 RED=$'\033[0;31m'
@@ -50,21 +73,19 @@ echo ""
 
 if [ "$COMMIT_AND_PUSH" = "1" ]; then
     echo "${BOLD}${BLUE}━━━ Committing changes ━━━${NC}"
-    # Run git as the original user, not as root
-    REAL_USER="${SUDO_USER:-$USER}"
-    if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
-        # Use su without - to preserve more env, and pass SSH_AUTH_SOCK for git push
-        su "$REAL_USER" -c "cd '$FLAKE_PATH' && git add -A && git commit -m '$COMMIT_MSG'" || echo "${YELLOW}Nothing to commit${NC}"
-        echo ""
-        echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
-        su "$REAL_USER" -c "export SSH_AUTH_SOCK='$SSH_AUTH_SOCK'; cd '$FLAKE_PATH' && git push" || echo "${YELLOW}Push failed or no remote configured${NC}"
+    # Keep Git as root for root-owned flakes, but forward the user's SSH agent for push.
+    find_ssh_agent_socket
+    if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ]; then
+        echo "${BLUE}Using SSH agent:${NC} $SSH_AUTH_SOCK"
     else
-        git add -A
-        git commit -m "$COMMIT_MSG" || echo "${YELLOW}Nothing to commit${NC}"
-        echo ""
-        echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
-        git push || echo "${YELLOW}Push failed or no remote configured${NC}"
+        echo "${YELLOW}No SSH agent socket found; git push may ask for a key passphrase${NC}"
     fi
+
+    git add -A
+    git commit -m "$COMMIT_MSG" || echo "${YELLOW}Nothing to commit${NC}"
+    echo ""
+    echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
+    git push || echo "${YELLOW}Push failed or no remote configured${NC}"
 else
     echo "${YELLOW}Skipping commit and push (disabled in settings)${NC}"
 fi

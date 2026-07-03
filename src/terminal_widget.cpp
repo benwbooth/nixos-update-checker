@@ -28,6 +28,7 @@ void TerminalWidget::setupTerminal() {
     m_terminal->setTerminalOpacity(1.0);
     // Keep the widget/window alive after the shell exits so content persists.
     m_terminal->setAutoClose(false);
+    m_terminal->setFocusPolicy(Qt::StrongFocus);
 
     // Set environment to support colors
     QStringList env = QProcess::systemEnvironment();
@@ -81,6 +82,7 @@ void TerminalWidget::runCommand(const QString &command) {
     m_terminal->setShellProgram("/bin/sh");
     m_terminal->setArgs({"-c", command});
     m_terminal->startShellProgram();
+    QMetaObject::invokeMethod(this, "focusTerminal", Qt::QueuedConnection);
 }
 
 QString TerminalWidget::getAllText() {
@@ -115,6 +117,17 @@ void TerminalWidget::hide() {
     if (m_terminal) {
         m_terminal->hide();
     }
+}
+
+void TerminalWidget::focusTerminal() {
+    if (!m_terminal) {
+        return;
+    }
+
+    if (m_terminal->windowHandle()) {
+        m_terminal->windowHandle()->requestActivate();
+    }
+    m_terminal->setFocus(Qt::OtherFocusReason);
 }
 
 void TerminalWidget::log(const QString &msg) {

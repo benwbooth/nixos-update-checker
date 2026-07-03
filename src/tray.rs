@@ -144,6 +144,7 @@ pub mod qobject {
 
 use core::pin::Pin;
 use cxx_qt_lib::QString;
+use std::os::unix::fs::FileTypeExt;
 use std::sync::{Arc, Mutex};
 
 use crate::config::{Config, IntervalUnit};
@@ -184,6 +185,55 @@ fn updates_to_json(updates: &[FlakeUpdate]) -> String {
 /// Deserialize updates from JSON string
 fn updates_from_json(json: &str) -> Vec<FlakeUpdate> {
     serde_json::from_str(json).unwrap_or_default()
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn is_socket(path: &str) -> bool {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.file_type().is_socket())
+        .unwrap_or(false)
+}
+
+fn systemd_user_ssh_auth_sock() -> Option<String> {
+    let output = std::process::Command::new("systemctl")
+        .args(["--user", "show-environment", "SSH_AUTH_SOCK"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.lines().find_map(|line| {
+        line.strip_prefix("SSH_AUTH_SOCK=")
+            .map(str::to_string)
+            .filter(|socket| !socket.is_empty() && is_socket(socket))
+    })
+}
+
+fn current_ssh_auth_sock(uid: u32) -> String {
+    if let Ok(socket) = std::env::var("SSH_AUTH_SOCK") {
+        if is_socket(&socket) {
+            return socket;
+        }
+    }
+
+    if let Some(socket) = systemd_user_ssh_auth_sock() {
+        return socket;
+    }
+
+    [
+        format!("/run/user/{uid}/ssh-agent"),
+        format!("/run/user/{uid}/keyring/ssh"),
+        format!("/run/user/{uid}/gnupg/S.gpg-agent.ssh"),
+    ]
+    .into_iter()
+    .find(|socket| is_socket(socket))
+    .unwrap_or_default()
 }
 
 /// Format a timestamp as relative time ("2 hours ago", "3 days ago", etc.)
@@ -660,17 +710,19 @@ impl qobject::UpdateChecker {
             None => "/run/current-system/sw/bin/nixos-update-checker-update".to_string(),
         };
 
-        // Get SSH_AUTH_SOCK for git push passthrough
-        let ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").unwrap_or_default();
+        // Forward the user's agent to the root update process so root-owned flakes can push.
+        let uid = unsafe { libc::getuid() };
+        let ssh_auth_sock = current_ssh_auth_sock(uid);
 
         let cmd = format!(
-            "pkexec env FLAKE_PATH='{}' COMMIT_MSG='{}' SSH_AUTH_SOCK='{}' COMMIT_AND_PUSH='{}' RUN_GC='{}' '{}'",
-            flake,
-            msg,
-            ssh_auth_sock,
-            if commit_and_push { "1" } else { "0" },
-            if run_gc { "1" } else { "0" },
-            script_path,
+            "pkexec env FLAKE_PATH={} COMMIT_MSG={} SSH_AUTH_SOCK={} ORIGINAL_UID={} COMMIT_AND_PUSH={} RUN_GC={} {}",
+            shell_quote(&flake),
+            shell_quote(&msg),
+            shell_quote(&ssh_auth_sock),
+            shell_quote(&uid.to_string()),
+            shell_quote(if commit_and_push { "1" } else { "0" }),
+            shell_quote(if run_gc { "1" } else { "0" }),
+            shell_quote(&script_path),
         );
 
         QString::from(&cmd)
@@ -692,4 +744,3 @@ impl qobject::UpdateChecker {
         }
     }
 }
-

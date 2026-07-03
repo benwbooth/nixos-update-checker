@@ -35,6 +35,55 @@ fn get_qt_include_path() -> String {
     String::new()
 }
 
+fn get_qt_version() -> Option<String> {
+    let output = std::process::Command::new("qmake")
+        .args(["-query", "QT_VERSION"])
+        .output()
+        .ok()?;
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!version.is_empty()).then_some(version)
+}
+
+fn get_qt_qml_include_path() -> String {
+    if let Ok(path) = env::var("QT_QML_INCLUDE_PATH") {
+        if !path.is_empty() {
+            return path;
+        }
+    }
+
+    if let Some(version) = get_qt_version() {
+        if let Ok(entries) = std::fs::read_dir("/nix/store") {
+            let suffix = format!("-qtdeclarative-{version}");
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if !name.ends_with(&suffix) {
+                    continue;
+                }
+
+                let include_path = path.join("include");
+                if include_path.join("QtQml").join("QQmlEngine").exists() {
+                    return include_path.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("pkg-config")
+        .args(["--variable=includedir", "Qt6Qml"])
+        .output()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return path;
+        }
+    }
+
+    String::new()
+}
+
 fn get_qt_libexec_path() -> String {
     // First try environment variable (set by nix)
     if let Ok(path) = env::var("QT_LIBEXEC_PATH") {
@@ -91,6 +140,7 @@ fn main() {
 
     // Get Qt paths
     let qt_include_path = get_qt_include_path();
+    let qt_qml_include_path = get_qt_qml_include_path();
     let qt_libexec_path = get_qt_libexec_path();
 
     // Get the manifest directory (where Cargo.toml is)
@@ -137,6 +187,11 @@ fn main() {
         cc_build.include(format!("{}/QtGui", qt_include_path));
         cc_build.include(format!("{}/QtWidgets", qt_include_path));
         cc_build.include(format!("{}/QtQml", qt_include_path));
+    }
+    if !qt_qml_include_path.is_empty() {
+        cc_build.include(&qt_qml_include_path);
+        cc_build.include(format!("{}/QtQml", qt_qml_include_path));
+        cc_build.include(format!("{}/QtQmlIntegration", qt_qml_include_path));
     }
 
     cc_build.compile("terminal_widget");
