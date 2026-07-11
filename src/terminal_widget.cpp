@@ -124,10 +124,34 @@ void TerminalWidget::focusTerminal() {
         return;
     }
 
+    // Activate the native window so the compositor delivers key events here.
+    m_terminal->activateWindow();
     if (m_terminal->windowHandle()) {
         m_terminal->windowHandle()->requestActivate();
     }
-    m_terminal->setFocus(Qt::OtherFocusReason);
+
+    // QTermWidget delegates keyboard input to an internal TerminalDisplay child
+    // widget. When the terminal is embedded as a foreign window via QML
+    // WindowContainer, focusing the outer QTermWidget is not always enough to
+    // route keystrokes to that inner widget, so focus it directly. Prefer the
+    // focus proxy (set by QTermWidget to its display), then fall back to
+    // locating the TerminalDisplay child by class name.
+    QWidget *inner = m_terminal->focusProxy();
+    if (!inner) {
+        const QList<QWidget *> children = m_terminal->findChildren<QWidget *>();
+        for (QWidget *child : children) {
+            if (qstrcmp(child->metaObject()->className(), "TerminalDisplay") == 0) {
+                inner = child;
+                break;
+            }
+        }
+    }
+
+    if (inner) {
+        inner->setFocus(Qt::OtherFocusReason);
+    } else {
+        m_terminal->setFocus(Qt::OtherFocusReason);
+    }
 }
 
 void TerminalWidget::log(const QString &msg) {
