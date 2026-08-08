@@ -558,6 +558,7 @@ impl qobject::UpdateChecker {
 
         // Update tooltip to reflect no updates
         self.as_mut().set_tooltip_text(QString::from("NixOS Update Checker - No updates"));
+        self.as_mut().updates_changed();
     }
 
     pub fn clear_output(mut self: Pin<&mut Self>) {

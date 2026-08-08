@@ -299,9 +299,7 @@ ApplicationWindow {
             // Check for completion
             if (checker.check_update_complete(text)) {
                 var exitCode = checker.get_update_exit_code(text)
-                terminal.running = false
 
-                checker.update_running = false
                 checker.update_status_line = exitCode === 0 ? "Update completed successfully" : "Update failed with exit code " + exitCode
                 progressInfo.complete(exitCode === 0)
                 terminal.show()
@@ -319,6 +317,7 @@ ApplicationWindow {
                         rebootDialog.open()
                     }
                 }
+                terminal.running = false
                 checker.update_completed()
             }
         }
