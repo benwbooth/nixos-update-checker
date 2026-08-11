@@ -27,6 +27,8 @@ ApplicationWindow {
         property real progress: 0.0
         property string statusText: ""
         property string progressText: ""
+        property bool completed: false
+        property bool succeeded: false
 
         function parseProgress(line) {
             if (!line) {
@@ -127,6 +129,8 @@ ApplicationWindow {
             progress = 0.0
             statusText = "Starting update..."
             progressText = "0%"
+            completed = false
+            succeeded = false
             root.updateJustCompleted = false
         }
 
@@ -134,6 +138,8 @@ ApplicationWindow {
             progress = 1.0
             progressText = "100%"
             statusText = success ? "Update complete!" : "Update failed"
+            completed = true
+            succeeded = success
         }
     }
 
@@ -166,6 +172,8 @@ ApplicationWindow {
                 progressInfo.progress = 0.0
                 progressInfo.progressText = ""
                 progressInfo.statusText = ""
+                progressInfo.completed = false
+                progressInfo.succeeded = false
             }
         }
 
@@ -680,7 +688,7 @@ ApplicationWindow {
                         width: progressBar.visualPosition * parent.width
                         height: parent.height
                         radius: 3
-                        color: progressBar.value >= 1.0 ? "#4CAF50" : "#2196F3"
+                        color: progressInfo.completed ? (progressInfo.succeeded ? "#4CAF50" : "#F44336") : "#2196F3"
                     }
                 }
             }
