@@ -200,6 +200,8 @@ ApplicationWindow {
         onConfig_loaded: {
             flakePathField.text = checker.flake_path
             intervalSpinBox.value = checker.check_interval
+            generationPruneModeCombo.currentIndex = checker.generation_prune_mode === "older-than" ? 1 : 0
+            generationPruneSpinBox.value = checker.generation_prune_value
             // Set the unit combo box
             var unit = checker.check_interval_unit
             if (unit === "days") {
@@ -374,7 +376,15 @@ ApplicationWindow {
                         terminal.clear()
                         root.lastLine = ""
                         progressInfo.reset()
-                        var cmd = checker.build_update_command(flakePath, commitMsg, checker.commit_and_push, checker.run_gc_after_update)
+                        var cmd = checker.build_update_command(
+                            flakePath,
+                            commitMsg,
+                            checker.commit_and_push,
+                            checker.run_gc_after_update,
+                            checker.prune_generations,
+                            checker.generation_prune_mode,
+                            checker.generation_prune_value
+                        )
                         terminal.runCommand(cmd)
                         if (outputExpanded) {
                             Qt.callLater(terminal.focusTerminal)
@@ -493,6 +503,52 @@ ApplicationWindow {
                 onToggled: {
                     checker.commit_and_push = checked
                     autosaveSettings()
+                }
+            }
+
+            Label { text: "" }  // empty cell for grid alignment
+            CheckBox {
+                id: pruneGenerationsCheckbox
+                text: "Prune old system generations after update"
+                checked: checker.prune_generations
+                onToggled: {
+                    checker.prune_generations = checked
+                    autosaveSettings()
+                }
+            }
+
+            Label { text: "" }  // empty cell for grid alignment
+            RowLayout {
+                spacing: 10
+                enabled: pruneGenerationsCheckbox.checked
+
+                ComboBox {
+                    id: generationPruneModeCombo
+                    model: [
+                        { text: "Keep newest", value: "keep-latest" },
+                        { text: "Older than", value: "older-than" }
+                    ]
+                    textRole: "text"
+                    onActivated: {
+                        checker.generation_prune_mode = model[currentIndex].value
+                        autosaveSettings()
+                    }
+                }
+
+                SpinBox {
+                    id: generationPruneSpinBox
+                    from: 1
+                    to: 999
+                    value: 10
+                    editable: true
+                    onValueModified: {
+                        checker.generation_prune_value = value
+                        autosaveSettings()
+                    }
+                }
+
+                Label {
+                    text: generationPruneModeCombo.currentIndex === 1 ? "days" : "generations"
                 }
             }
 
@@ -802,7 +858,15 @@ ApplicationWindow {
                         terminal.clear()
                         root.lastLine = ""
                         progressInfo.reset()
-                        var cmd = checker.build_update_command(flakePath, commitMsg, checker.commit_and_push, checker.run_gc_after_update)
+                        var cmd = checker.build_update_command(
+                            flakePath,
+                            commitMsg,
+                            checker.commit_and_push,
+                            checker.run_gc_after_update,
+                            checker.prune_generations,
+                            checker.generation_prune_mode,
+                            checker.generation_prune_value
+                        )
                         terminal.runCommand(cmd)
                         if (outputExpanded) {
                             Qt.callLater(terminal.focusTerminal)

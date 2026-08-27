@@ -50,6 +50,30 @@ impl IntervalUnit {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum GenerationPruneMode {
+    #[default]
+    KeepLatest,
+    OlderThan,
+}
+
+impl GenerationPruneMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GenerationPruneMode::KeepLatest => "keep-latest",
+            GenerationPruneMode::OlderThan => "older-than",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "older-than" => GenerationPruneMode::OlderThan,
+            _ => GenerationPruneMode::KeepLatest,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub flake_path: String,
@@ -68,6 +92,15 @@ pub struct Config {
     /// Whether to run garbage collection after updating
     #[serde(default)]
     pub run_gc_after_update: bool,
+    /// Whether to prune old system generations after a successful update
+    #[serde(default)]
+    pub prune_generations: bool,
+    /// Whether pruning keeps a fixed count or removes generations by age
+    #[serde(default)]
+    pub generation_prune_mode: GenerationPruneMode,
+    /// Number of generations to keep, or maximum age in days
+    #[serde(default = "default_generation_prune_value")]
+    pub generation_prune_value: u32,
     /// Cached download size from last check (e.g. "500.00 MiB")
     #[serde(default)]
     pub cached_download_size: String,
@@ -77,6 +110,8 @@ pub struct Config {
 }
 
 fn default_true() -> bool { true }
+
+fn default_generation_prune_value() -> u32 { 10 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -88,6 +123,9 @@ impl Default for Config {
             cached_updates_json: String::new(),
             commit_and_push: true,
             run_gc_after_update: false,
+            prune_generations: false,
+            generation_prune_mode: GenerationPruneMode::KeepLatest,
+            generation_prune_value: default_generation_prune_value(),
             cached_download_size: String::new(),
             cached_unpacked_size: String::new(),
         }
@@ -185,6 +223,9 @@ mod tests {
         assert_eq!(config.check_interval, 1);
         assert_eq!(config.check_interval_unit, IntervalUnit::Hours);
         assert_eq!(config.flake_path, "/etc/nixos");
+        assert!(!config.prune_generations);
+        assert_eq!(config.generation_prune_mode, GenerationPruneMode::KeepLatest);
+        assert_eq!(config.generation_prune_value, 10);
     }
 
     #[test]
@@ -194,6 +235,9 @@ mod tests {
             check_interval: 6,
             commit_and_push: true,
             run_gc_after_update: false,
+            prune_generations: true,
+            generation_prune_mode: GenerationPruneMode::OlderThan,
+            generation_prune_value: 30,
             check_interval_unit: IntervalUnit::Hours,
             last_check_timestamp: 0,
             cached_updates_json: String::new(),
@@ -207,6 +251,23 @@ mod tests {
         assert_eq!(parsed.flake_path, config.flake_path);
         assert_eq!(parsed.check_interval, config.check_interval);
         assert_eq!(parsed.check_interval_unit, config.check_interval_unit);
+        assert_eq!(parsed.prune_generations, config.prune_generations);
+        assert_eq!(parsed.generation_prune_mode, config.generation_prune_mode);
+        assert_eq!(parsed.generation_prune_value, config.generation_prune_value);
+    }
+
+    #[test]
+    fn test_existing_config_uses_generation_prune_defaults() {
+        let toml_str = r#"
+flake_path = "/etc/nixos"
+check_interval = 1
+check_interval_unit = "hours"
+"#;
+        let parsed: Config = toml::from_str(toml_str).unwrap();
+
+        assert!(!parsed.prune_generations);
+        assert_eq!(parsed.generation_prune_mode, GenerationPruneMode::KeepLatest);
+        assert_eq!(parsed.generation_prune_value, 10);
     }
 
     #[test]

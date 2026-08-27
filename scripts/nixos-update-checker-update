@@ -1,7 +1,7 @@
 #!/bin/sh
 # NixOS Update Checker - Update Script
 # This script is called by the GUI with pkexec to perform the actual update
-# Expects FLAKE_PATH and COMMIT_MSG environment variables
+# Expects update settings through environment variables supplied by the GUI
 
 if [ -z "$FLAKE_PATH" ]; then
     echo "Error: FLAKE_PATH environment variable not set"
@@ -33,6 +33,34 @@ find_ssh_agent_socket() {
             return
         fi
     done
+}
+
+prune_system_generations() {
+    case "$GENERATION_PRUNE_VALUE" in
+        ''|0|*[!0-9]*)
+            echo "${YELLOW}Invalid generation pruning value; skipping generation pruning${NC}"
+            return
+            ;;
+    esac
+
+    case "$GENERATION_PRUNE_MODE" in
+        keep-latest)
+            PRUNE_SPEC="+$GENERATION_PRUNE_VALUE"
+            echo "${BLUE}Keeping newest $GENERATION_PRUNE_VALUE system generations${NC}"
+            ;;
+        older-than)
+            PRUNE_SPEC="${GENERATION_PRUNE_VALUE}d"
+            echo "${BLUE}Removing system generations older than $GENERATION_PRUNE_VALUE days${NC}"
+            ;;
+        *)
+            echo "${YELLOW}Invalid generation pruning mode; skipping generation pruning${NC}"
+            return
+            ;;
+    esac
+
+    if ! nix-env --profile /nix/var/nix/profiles/system --delete-generations "$PRUNE_SPEC"; then
+        echo "${YELLOW}Generation pruning failed${NC}"
+    fi
 }
 
 # ANSI color codes
@@ -99,6 +127,15 @@ else
     echo "${YELLOW}Skipping commit and push (disabled in settings)${NC}"
 fi
 echo ""
+
+if [ "$PRUNE_GENERATIONS" = "1" ] && [ "$FAILED" -eq 0 ]; then
+    echo "${BOLD}${MAGENTA}━━━ Pruning old system generations ━━━${NC}"
+    prune_system_generations
+    echo ""
+elif [ "$PRUNE_GENERATIONS" = "1" ] && [ "$FAILED" -eq 1 ]; then
+    echo "${YELLOW}Skipping generation pruning due to failed update${NC}"
+    echo ""
+fi
 
 if [ "$RUN_GC" = "1" ] && [ "$FAILED" -eq 0 ]; then
     echo "${BOLD}${MAGENTA}━━━ Running garbage collection ━━━${NC}"

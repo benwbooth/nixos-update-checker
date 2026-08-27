@@ -29,6 +29,9 @@ pub mod qobject {
         #[qproperty(QString, update_status_line)]
         #[qproperty(bool, commit_and_push)]
         #[qproperty(bool, run_gc_after_update)]
+        #[qproperty(bool, prune_generations)]
+        #[qproperty(QString, generation_prune_mode)]
+        #[qproperty(i32, generation_prune_value)]
         #[qproperty(QString, download_size)]
         #[qproperty(QString, unpacked_size)]
         #[qproperty(QString, build_info)]
@@ -112,7 +115,16 @@ pub mod qobject {
 
         /// Build the full pkexec update command string
         #[qinvokable]
-        fn build_update_command(self: &UpdateChecker, flake_path: QString, commit_msg: QString, commit_and_push: bool, run_gc: bool) -> QString;
+        fn build_update_command(
+            self: &UpdateChecker,
+            flake_path: QString,
+            commit_msg: QString,
+            commit_and_push: bool,
+            run_gc: bool,
+            prune_generations: bool,
+            generation_prune_mode: QString,
+            generation_prune_value: i32,
+        ) -> QString;
     }
 
     unsafe extern "RustQt" {
@@ -147,7 +159,7 @@ use cxx_qt_lib::QString;
 use std::os::unix::fs::FileTypeExt;
 use std::sync::{Arc, Mutex};
 
-use crate::config::{Config, IntervalUnit};
+use crate::config::{Config, GenerationPruneMode, IntervalUnit};
 use crate::flake_checker::{self, FlakeUpdate, CheckResult};
 
 /// Rust implementation of the UpdateChecker QObject
@@ -169,6 +181,9 @@ pub struct UpdateCheckerRust {
     update_status_line: QString,
     commit_and_push: bool,
     run_gc_after_update: bool,
+    prune_generations: bool,
+    generation_prune_mode: QString,
+    generation_prune_value: i32,
     download_size: QString,
     unpacked_size: QString,
     build_info: QString,
@@ -422,6 +437,11 @@ impl qobject::UpdateChecker {
             cached_updates_json: existing.cached_updates_json,
             commit_and_push: *self.as_ref().commit_and_push(),
             run_gc_after_update: *self.as_ref().run_gc_after_update(),
+            prune_generations: *self.as_ref().prune_generations(),
+            generation_prune_mode: GenerationPruneMode::from_str(
+                &self.as_ref().generation_prune_mode().to_string(),
+            ),
+            generation_prune_value: (*self.as_ref().generation_prune_value()).max(1) as u32,
             cached_download_size: existing.cached_download_size,
             cached_unpacked_size: existing.cached_unpacked_size,
         };
@@ -476,6 +496,12 @@ impl qobject::UpdateChecker {
 
                 self.as_mut().set_commit_and_push(config.commit_and_push);
                 self.as_mut().set_run_gc_after_update(config.run_gc_after_update);
+                self.as_mut().set_prune_generations(config.prune_generations);
+                self.as_mut().set_generation_prune_mode(QString::from(
+                    config.generation_prune_mode.as_str(),
+                ));
+                self.as_mut()
+                    .set_generation_prune_value(config.generation_prune_value as i32);
 
                 // Set build info - format timestamp at runtime for local timezone
                 let build_epoch: i64 = env!("BUILD_TIMESTAMP_EPOCH").parse().unwrap_or(0);
@@ -511,6 +537,10 @@ impl qobject::UpdateChecker {
                 self.as_mut().set_flake_path(QString::from("/etc/nixos"));
                 self.as_mut().set_check_interval(1);
                 self.as_mut().set_check_interval_unit(QString::from("hours"));
+                self.as_mut().set_prune_generations(false);
+                self.as_mut()
+                    .set_generation_prune_mode(QString::from("keep-latest"));
+                self.as_mut().set_generation_prune_value(10);
                 self.as_mut().set_tooltip_text(QString::from("NixOS Update Checker\nLast checked: Never"));
                 self.as_mut().config_loaded();
             }
@@ -695,9 +725,20 @@ impl qobject::UpdateChecker {
     }
 
     /// Build the full pkexec update command string
-    pub fn build_update_command(&self, flake_path: QString, commit_msg: QString, commit_and_push: bool, run_gc: bool) -> QString {
+    pub fn build_update_command(
+        &self,
+        flake_path: QString,
+        commit_msg: QString,
+        commit_and_push: bool,
+        run_gc: bool,
+        prune_generations: bool,
+        generation_prune_mode: QString,
+        generation_prune_value: i32,
+    ) -> QString {
         let flake = flake_path.to_string();
         let msg = commit_msg.to_string();
+        let prune_mode = GenerationPruneMode::from_str(&generation_prune_mode.to_string());
+        let prune_value = generation_prune_value.max(1);
 
         // Find the script - check dev location first, then installed location
         let exe_path = std::env::current_exe().unwrap_or_default();
@@ -716,13 +757,16 @@ impl qobject::UpdateChecker {
         let ssh_auth_sock = current_ssh_auth_sock(uid);
 
         let cmd = format!(
-            "pkexec env FLAKE_PATH={} COMMIT_MSG={} SSH_AUTH_SOCK={} ORIGINAL_UID={} COMMIT_AND_PUSH={} RUN_GC={} {}",
+            "pkexec env FLAKE_PATH={} COMMIT_MSG={} SSH_AUTH_SOCK={} ORIGINAL_UID={} COMMIT_AND_PUSH={} RUN_GC={} PRUNE_GENERATIONS={} GENERATION_PRUNE_MODE={} GENERATION_PRUNE_VALUE={} {}",
             shell_quote(&flake),
             shell_quote(&msg),
             shell_quote(&ssh_auth_sock),
             shell_quote(&uid.to_string()),
             shell_quote(if commit_and_push { "1" } else { "0" }),
             shell_quote(if run_gc { "1" } else { "0" }),
+            shell_quote(if prune_generations { "1" } else { "0" }),
+            shell_quote(prune_mode.as_str()),
+            shell_quote(&prune_value.to_string()),
             shell_quote(&script_path),
         );
 
