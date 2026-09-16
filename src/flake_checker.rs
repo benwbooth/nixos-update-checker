@@ -470,6 +470,181 @@ fn parse_dry_build_output(output: &str, current_packages: &std::collections::Has
     })
 }
 
+/// NixOS boot components that require a reboot when changed.
+///
+/// Mirrors upstream `system.autoUpgrade.allowReboot`, which compares
+/// `/run/booted-system/{initrd,kernel,kernel-modules}` against the newly
+/// built system: the live system keeps running the booted kernel/modules/
+/// initrd until reboot, so any difference means a reboot is needed to use
+/// the new generation.
+pub const BOOT_COMPONENTS: &[&str] = &["kernel", "initrd", "kernel-modules"];
+
+/// Pure comparison of resolved boot-component targets.
+///
+/// Each map holds `component -> readlink target`. A component counts as
+/// changed only when it resolves on BOTH sides and the targets differ;
+/// missing entries are treated as unknown and skipped (never a reboot).
+/// Order follows [`BOOT_COMPONENTS`].
+pub fn diff_boot_components(
+    booted: &std::collections::HashMap<String, String>,
+    current: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    let mut changed = Vec::new();
+    for comp in BOOT_COMPONENTS {
+        match (booted.get(*comp), current.get(*comp)) {
+            (Some(b), Some(c)) if b != c => changed.push(comp.to_string()),
+            _ => {}
+        }
+    }
+    changed
+}
+
+fn read_boot_targets(root: &Path) -> std::collections::HashMap<String, String> {
+    let mut targets = std::collections::HashMap::new();
+    for comp in BOOT_COMPONENTS {
+        if let Ok(target) = std::fs::read_link(root.join(comp)) {
+            targets.insert(comp.to_string(), target.to_string_lossy().to_string());
+        }
+    }
+    targets
+}
+
+/// Ground-truth reboot check: compare `/run/booted-system` against the
+/// current system (`/run/current-system`, falling back to
+/// `/nix/var/nix/profiles/system`).
+///
+/// Returns `None` when the comparison is impossible (missing paths, e.g.
+/// non-NixOS dev machines) so callers can fall back to the package-name
+/// heuristic; `Some(vec)` otherwise (`vec` empty = no reboot needed).
+pub fn booted_system_reboot_details() -> Option<Vec<String>> {
+    let booted = read_boot_targets(Path::new("/run/booted-system"));
+    if booted.is_empty() {
+        return None;
+    }
+    let mut current = read_boot_targets(Path::new("/run/current-system"));
+    if current.is_empty() {
+        current = read_boot_targets(Path::new("/nix/var/nix/profiles/system"));
+    }
+    if current.is_empty() {
+        return None;
+    }
+    Some(diff_boot_components(&booted, &current))
+}
+
+/// Returns true if updating the given Nix store package name requires a reboot
+/// to take full effect.
+///
+/// NOTE: this name heuristic is only a fallback for when the ground-truth
+/// [`booted_system_reboot_details`] check is unavailable. After a successful
+/// `nixos-rebuild switch` the booted-vs-current comparison is authoritative.
+///
+/// Rules (aligned with NixOS upstream `system.autoUpgrade.allowReboot`, which
+/// reboots only when `kernel`, `kernel-modules` or `initrd` differ between
+/// `/run/booted-system` and the newly built system):
+///
+/// Reboot required:
+/// - kernel image: `linux`, `kernel`
+/// - kernel modules: `linux-modules`, `kernel-modules`, anything containing
+///   those strings (e.g. `nvidia-kernel-modules`), plus the NVIDIA driver
+///   (`nvidia-x11`, `nvidia-open`) which ships kernel modules tied to the
+///   running kernel
+/// - initrd: `initrd`, `initrd-*` (e.g. `initrd-linux-...`)
+/// - CPU microcode loaded early at boot: `*-microcode`, `*-ucode`
+/// - boot loader staged for next boot: `grub`, `systemd-boot`, `bootspec`,
+///   `lanzaboote`
+///
+/// Explicitly NOT reboot-required (common sources of false positives from the
+/// old substring matching):
+/// - `systemd` (updated in place via `daemon-reexec`), `dbus` (restarted),
+///   `glibc` (old processes keep the old store path; new launches use the new)
+/// - GPU userspace (`mesa`, `nvidia-settings`, `amdgpu` userspace) which only
+///   needs an app restart / re-login; the in-kernel GPU drivers ship with the
+///   kernel image above
+/// - `linux-firmware` / `*-firmware`: staged for next boot / device re-probe,
+///   intentionally excluded to match upstream and avoid nagging on every
+///   firmware bump
+/// - lookalikes caught by the old `contains("linux")`: `util-linux`,
+///   `linux-pam`, `linux-headers`, `linux-dev` (build-time only)
+/// - `grub` themes and other `grub-*`/`systemd-*` utilities that are not the
+///   boot loader itself
+///
+/// Matching is done on the version-stripped base name (see
+/// [`FlakeUpdate::base_name`]), not a raw substring, so `util-linux` no longer
+/// matches `linux`.
+pub fn package_requires_reboot(package_name: &str) -> bool {
+    let lower = package_name.to_lowercase();
+    let base: &str = if let Some(pos) = lower.rfind('-') {
+        let after = &lower[pos + 1..];
+        if after.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            &lower[..pos]
+        } else {
+            &lower
+        }
+    } else {
+        &lower
+    };
+
+    // Exact base-name matches.
+    const REBOOT_BASE_EXACT: &[&str] = &[
+        "linux",
+        "kernel",
+        "linux-modules",
+        "kernel-modules",
+        "initrd",
+        "amd-microcode",
+        "intel-microcode",
+        "amd-ucode",
+        "intel-ucode",
+        "microcode",
+        "ucode",
+        "grub",
+        "grub2",
+        "systemd-boot",
+        "systemd-boot-efi",
+        "bootspec",
+        "lanzaboote",
+    ];
+    if REBOOT_BASE_EXACT.contains(&base) {
+        return true;
+    }
+
+    // initrd variants still carry a version fragment after stripping
+    // (e.g. "initrd-linux-6.16.9" -> "initrd-linux-6.16").
+    if base == "initrd" || base.starts_with("initrd-") {
+        return true;
+    }
+
+    // Out-of-tree kernel modules tied to the running kernel
+    // (e.g. "nvidia-kernel-modules-...").
+    if base.contains("kernel-modules") || base.contains("linux-modules") {
+        return true;
+    }
+
+    // NVIDIA driver packages embed the kernel version
+    // (e.g. "nvidia-x11-580.95.05-6.16.9" -> base "nvidia-x11-580.95.05").
+    // The separate "nvidia-settings" GUI tool is intentionally excluded.
+    if base.starts_with("nvidia-x11") || base.starts_with("nvidia-open") {
+        return true;
+    }
+
+    // CPU microcode variants (e.g. "amd-ucode-2025..." -> base "amd-ucode").
+    if base.ends_with("-microcode") || base.ends_with("-ucode") {
+        return true;
+    }
+
+    false
+}
+
+/// Filter an update list down to the packages that require a reboot.
+/// Returns the full (versioned) package names for display in the dialog.
+pub fn filter_reboot_packages(updates: &[FlakeUpdate]) -> Vec<String> {
+    updates
+        .iter()
+        .filter(|u| package_requires_reboot(&u.package_name))
+        .map(|u| u.package_name.clone())
+        .collect()
+}
+
 /// Check if a package name is an internal/system package that should be filtered out
 fn is_internal_package(name: &str) -> bool {
     // Exact matches
@@ -766,5 +941,122 @@ these derivations will be built:
             old_hash_short: "oldhash1".to_string(),
         };
         assert_eq!(update.display(), "myapp (oldhash1 → newhash1)");
+    }
+
+    #[test]
+    fn test_package_requires_reboot_true() {
+        // Kernel image, modules, initrd
+        for pkg in [
+            "linux-6.16.9",
+            "kernel-6.16.9",
+            "linux-modules-6.16.9",
+            "kernel-modules-6.16.9",
+            "initrd-6.16.9",
+            "initrd-linux-6.16.9",
+            // Out-of-tree kernel modules and NVIDIA driver (tied to kernel)
+            "nvidia-kernel-modules-580.95.05-6.16.9",
+            "nvidia-x11-580.95.05-6.16.9",
+            "nvidia-open-6.16.9-580.95.05",
+            // Microcode (loaded early at boot)
+            "amd-microcode-20250708",
+            "intel-microcode-20250708",
+            "amd-ucode-2025.01",
+            // Boot loader
+            "grub-2.12",
+            "grub2-2.12",
+            "systemd-boot-257.8",
+            "bootspec-1.0",
+            "lanzaboote-0.4.2",
+        ] {
+            assert!(package_requires_reboot(pkg), "{} should require reboot", pkg);
+        }
+    }
+
+    #[test]
+    fn test_package_requires_reboot_false_positives() {
+        // Old substring logic matched these; none needs a reboot.
+        for pkg in [
+            // "linux" substring lookalikes
+            "util-linux-2.40.4",
+            "linux-pam-1.6.1",
+            "linux-headers-6.16",
+            "linux-dev-6.16.9",
+            // Activated in place by `nixos-rebuild switch`
+            "systemd-257.8",
+            "systemd-libs-257.8",
+            "dbus-1.14.10",
+            "dbus-glib-0.112",
+            "glibc-2.40-36",
+            "glibc-locales-2.40",
+            // GPU userspace: app restart / re-login suffices
+            "mesa-24.3.4",
+            "nvidia-settings-550.127.05",
+            "amdgpu-pro-24.10",
+            // Firmware is staged for next boot, excluded to match upstream
+            "linux-firmware-20250708",
+            "sof-firmware-2025.01",
+            // Boot loader themes/utilities, not the loader itself
+            "grub2-theme-nixos-1.0",
+            // Ordinary packages
+            "firefox-135.0",
+        ] {
+            assert!(!package_requires_reboot(pkg), "{} should NOT require reboot", pkg);
+        }
+    }
+
+    #[test]
+    fn test_filter_reboot_packages() {
+        let updates = vec![
+            FlakeUpdate { package_name: "firefox-135.0".to_string(), old_package_name: String::new(), hash_short: "a".to_string(), old_hash_short: String::new() },
+            FlakeUpdate { package_name: "util-linux-2.40.4".to_string(), old_package_name: String::new(), hash_short: "b".to_string(), old_hash_short: String::new() },
+            FlakeUpdate { package_name: "linux-6.16.9".to_string(), old_package_name: String::new(), hash_short: "c".to_string(), old_hash_short: String::new() },
+            FlakeUpdate { package_name: "systemd-257.8".to_string(), old_package_name: String::new(), hash_short: "d".to_string(), old_hash_short: String::new() },
+        ];
+        assert_eq!(filter_reboot_packages(&updates), vec!["linux-6.16.9".to_string()]);
+        let none: Vec<FlakeUpdate> = vec![];
+        assert!(filter_reboot_packages(&none).is_empty());
+    }
+
+    fn boot_maps(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn test_diff_boot_components() {
+        // Identical systems: no reboot.
+        let same = boot_maps(&[
+            ("kernel", "/nix/store/aaa-nixos-system-1/kernel"),
+            ("initrd", "/nix/store/aaa-nixos-system-1/initrd"),
+            ("kernel-modules", "/nix/store/aaa-nixos-system-1/kernel-modules"),
+        ]);
+        assert!(diff_boot_components(&same, &same).is_empty());
+
+        // Kernel changed.
+        let booted = same.clone();
+        let mut current = same.clone();
+        current.insert("kernel".to_string(), "/nix/store/bbb-nixos-system-2/kernel".to_string());
+        assert_eq!(diff_boot_components(&booted, &current), vec!["kernel".to_string()]);
+
+        // Multiple changes come back in BOOT_COMPONENTS order.
+        let mut current_all = booted.clone();
+        for comp in BOOT_COMPONENTS {
+            current_all.insert(comp.to_string(), format!("/nix/store/bbb-{comp}"));
+        }
+        assert_eq!(
+            diff_boot_components(&booted, &current_all),
+            BOOT_COMPONENTS.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+
+        // Missing on either side is unknown: never a reboot.
+        let empty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        assert!(diff_boot_components(&empty, &empty).is_empty());
+        assert!(diff_boot_components(&booted, &empty).is_empty());
+        assert!(diff_boot_components(&empty, &booted).is_empty());
+    }
+
+    #[test]
+    fn test_booted_system_reboot_details_does_not_panic() {
+        // Environment-dependent (reads /run/*): just assert it runs.
+        let _ = booted_system_reboot_details();
     }
 }

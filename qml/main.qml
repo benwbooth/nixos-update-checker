@@ -905,7 +905,7 @@ ApplicationWindow {
             spacing: 10
 
             Label {
-                text: "The following packages were updated and may require a reboot to take full effect:"
+                text: "The system was updated with changes that require a reboot to take effect:"
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true
             }

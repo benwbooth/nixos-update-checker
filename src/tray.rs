@@ -656,39 +656,16 @@ impl qobject::UpdateChecker {
 
     /// Internal helper to get the list of reboot-requiring packages
     fn get_reboot_packages_list(&self) -> Vec<String> {
-        // Packages that typically require a reboot when updated
-        const REBOOT_PACKAGES: &[&str] = &[
-            "linux",
-            "kernel",
-            "systemd",
-            "glibc",
-            "dbus",
-            "nvidia",
-            "amdgpu",
-            "mesa",
-            "linux-firmware",
-            "intel-microcode",
-            "amd-microcode",
-            "grub",
-            "systemd-boot",
-            "initrd",
-            "firmware",
-        ];
-
+        // Primary: ground truth — compare booted vs current system
+        // (kernel/initrd/kernel-modules), same as NixOS autoUpgrade.
+        // This is authoritative right after `nixos-rebuild switch`.
+        if let Some(diff) = flake_checker::booted_system_reboot_details() {
+            return diff;
+        }
+        // Fallback (paths unreadable, e.g. non-NixOS dev): package heuristic.
         let updates_json = self.updates_json().to_string();
         let updates = updates_from_json(&updates_json);
-
-        let mut reboot_packages = Vec::new();
-        for update in &updates {
-            let name_lower = update.package_name.to_lowercase();
-            for &pkg in REBOOT_PACKAGES {
-                if name_lower.contains(pkg) {
-                    reboot_packages.push(update.package_name.clone());
-                    break;
-                }
-            }
-        }
-        reboot_packages
+        flake_checker::filter_reboot_packages(&updates)
     }
 
     /// Find the last non-empty line from terminal text, stripping ANSI escape codes
