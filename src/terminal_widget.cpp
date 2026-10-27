@@ -3,6 +3,9 @@
 #include <QProcess>
 #include <QDebug>
 #include <QCoreApplication>
+#include <QBuffer>
+#include <QKeyEvent>
+#include <QMenu>
 
 TerminalWidget::TerminalWidget(QObject *parent)
     : QObject(parent)
@@ -29,6 +32,15 @@ void TerminalWidget::setupTerminal() {
     // Keep the widget/window alive after the shell exits so content persists.
     m_terminal->setAutoClose(false);
     m_terminal->setFocusPolicy(Qt::StrongFocus);
+
+    // Copy/paste: QTermWidget leaves shortcuts and the context menu to the
+    // embedding app. Rectangular selection is built in (Ctrl+Alt+drag).
+    m_terminal->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_terminal, &QWidget::customContextMenuRequested,
+            this, &TerminalWidget::showContextMenu);
+    if (QWidget *display = m_terminal->focusProxy()) {
+        display->installEventFilter(this);
+    }
 
     // Set environment to support colors
     QStringList env = QProcess::systemEnvironment();
@@ -88,17 +100,80 @@ void TerminalWidget::runCommand(const QString &command) {
 QString TerminalWidget::getAllText() {
     if (!m_terminal) return QString();
 
+    // Read via saveHistory rather than the selection API so polling doesn't
+    // clobber whatever the user has selected.
+    QBuffer buffer;
+    buffer.open(QIODevice::WriteOnly);
+    m_terminal->saveHistory(&buffer);
+    return QString::fromUtf8(buffer.data());
+}
+
+void TerminalWidget::copySelection() {
+    if (m_terminal) {
+        m_terminal->copyClipboard();
+    }
+}
+
+void TerminalWidget::paste() {
+    if (m_terminal) {
+        m_terminal->pasteClipboard();
+    }
+}
+
+void TerminalWidget::selectAll() {
+    if (!m_terminal) return;
     int totalLines = m_terminal->screenLinesCount() + m_terminal->historyLinesCount();
-    int totalCols = m_terminal->screenColumnsCount();
-
     m_terminal->setSelectionStart(0, 0);
-    m_terminal->setSelectionEnd(totalLines, totalCols);
-    QString allText = m_terminal->selectedText();
-    // Clear selection
-    m_terminal->setSelectionStart(0, 0);
-    m_terminal->setSelectionEnd(0, 0);
+    m_terminal->setSelectionEnd(totalLines, m_terminal->screenColumnsCount());
+}
 
-    return allText;
+bool TerminalWidget::eventFilter(QObject *watched, QEvent *event) {
+    if (event->type() != QEvent::KeyPress && event->type() != QEvent::ShortcutOverride) {
+        return QObject::eventFilter(watched, event);
+    }
+
+    auto *key = static_cast<QKeyEvent *>(event);
+    const auto mods = key->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
+    bool isCopy = (mods == (Qt::ControlModifier | Qt::ShiftModifier) && key->key() == Qt::Key_C)
+               || (mods == Qt::ControlModifier && key->key() == Qt::Key_Insert);
+    bool isPaste = (mods == (Qt::ControlModifier | Qt::ShiftModifier) && key->key() == Qt::Key_V)
+                || (mods == Qt::ShiftModifier && key->key() == Qt::Key_Insert);
+    bool isSelectAll = mods == (Qt::ControlModifier | Qt::ShiftModifier) && key->key() == Qt::Key_A;
+
+    if (!isCopy && !isPaste && !isSelectAll) {
+        return QObject::eventFilter(watched, event);
+    }
+    if (event->type() == QEvent::ShortcutOverride) {
+        event->accept();
+        return true;
+    }
+
+    if (isCopy) copySelection();
+    else if (isPaste) paste();
+    else selectAll();
+    return true;
+}
+
+void TerminalWidget::showContextMenu(const QPoint &pos) {
+    if (!m_terminal) return;
+
+    QMenu menu;
+    QAction *copy = menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copy"), this,
+                                   &TerminalWidget::copySelection);
+    copy->setShortcut(QKeySequence("Ctrl+Shift+C"));
+    copy->setEnabled(!m_terminal->selectedText().isEmpty());
+    QAction *pasteAction = menu.addAction(QIcon::fromTheme("edit-paste"), tr("Paste"), this,
+                                          &TerminalWidget::paste);
+    pasteAction->setShortcut(QKeySequence("Ctrl+Shift+V"));
+    pasteAction->setEnabled(m_running);
+    menu.addSeparator();
+    QAction *all = menu.addAction(QIcon::fromTheme("edit-select-all"), tr("Select All"), this,
+                                  &TerminalWidget::selectAll);
+    all->setShortcut(QKeySequence("Ctrl+Shift+A"));
+    menu.addSeparator();
+    QAction *hint = menu.addAction(tr("Tip: Ctrl+Alt+drag for block selection"));
+    hint->setEnabled(false);
+    menu.exec(m_terminal->mapToGlobal(pos));
 }
 
 void TerminalWidget::clear() {

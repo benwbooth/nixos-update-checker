@@ -27,13 +27,20 @@ public:
     Q_INVOKABLE void focusTerminal();
     Q_INVOKABLE void log(const QString &msg);
     Q_INVOKABLE bool hasContent() const;
+    Q_INVOKABLE void copySelection();
+    Q_INVOKABLE void paste();
+    Q_INVOKABLE void selectAll();
 
 signals:
     void windowReady();
     void runningChanged();
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void setupTerminal();
+    void showContextMenu(const QPoint &pos);
     QTermWidget *m_terminal;
     bool m_running;
 };

@@ -12,7 +12,10 @@ ApplicationWindow {
     width: 975
     height: 700
     minimumWidth: 900
-    minimumHeight: 400
+    // Track the content so expanding the package list or terminal grows the
+    // window instead of pushing the button row off the bottom.
+    minimumHeight: Math.min(mainContent.implicitHeight + 2 * mainContent.anchors.margins,
+                            Screen.desktopAvailableHeight - 40)
     title: "NixOS Update Checker"
     flags: Qt.Dialog | Qt.WindowStaysOnTopHint
 
@@ -428,138 +431,160 @@ ApplicationWindow {
     ColumnLayout {
         id: mainContent
         anchors.fill: parent
-        anchors.margins: 15
-        spacing: 10
+        anchors.margins: 16
+        spacing: 12
 
-        Label {
-            text: "NixOS Update Checker"
-            font.pixelSize: 18
-            font.bold: true
-            Layout.alignment: Qt.AlignHCenter
-        }
-
-        Label {
-            text: checker.build_info || ""
-            font.pixelSize: 10
-            color: "#888"
-            Layout.alignment: Qt.AlignHCenter
-            visible: checker.build_info ? true : false
-        }
-
-        // Settings
-        GridLayout {
-            columns: 2
-            rowSpacing: 10
-            columnSpacing: 10
+        // Header
+        RowLayout {
             Layout.fillWidth: true
+            spacing: 12
 
-            Label { text: "Flake Path:" }
-            RowLayout {
+            Image {
+                source: "qrc:/icons/nix-flake.svg"
+                sourceSize.width: 36
+                sourceSize.height: 36
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            ColumnLayout {
+                spacing: 0
                 Layout.fillWidth: true
-                spacing: 5
 
-                TextField {
-                    id: flakePathField
-                    Layout.fillWidth: true
-                    placeholderText: "/etc/nixos"
-                    readOnly: true
-                }
-
-                Button {
-                    text: "Browse..."
-                    onClicked: folderDialog.open()
-                }
-            }
-
-            Label { text: "Check Interval:" }
-            RowLayout {
-                spacing: 10
-                SpinBox {
-                    id: intervalSpinBox
-                    from: 1
-                    to: 99
-                    value: 1
-                    editable: true
-                    onValueModified: autosaveSettings()
-                }
-                ComboBox {
-                    id: unitCombo
-                    model: [
-                        { text: "Hours", value: "hours" },
-                        { text: "Days", value: "days" },
-                        { text: "Weeks", value: "weeks" }
-                    ]
-                    textRole: "text"
-                    currentIndex: 0
-                    onActivated: autosaveSettings()
-                }
-            }
-
-            Label { text: "" }  // empty cell for grid alignment
-            CheckBox {
-                id: commitAndPushCheckbox
-                text: "Commit and push after update"
-                checked: checker.commit_and_push
-                onToggled: {
-                    checker.commit_and_push = checked
-                    autosaveSettings()
-                }
-            }
-
-            Label { text: "" }  // empty cell for grid alignment
-            CheckBox {
-                id: pruneGenerationsCheckbox
-                text: "Prune old system generations after update"
-                checked: checker.prune_generations
-                onToggled: {
-                    checker.prune_generations = checked
-                    autosaveSettings()
-                }
-            }
-
-            Label { text: "" }  // empty cell for grid alignment
-            RowLayout {
-                spacing: 10
-                enabled: pruneGenerationsCheckbox.checked
-
-                ComboBox {
-                    id: generationPruneModeCombo
-                    model: [
-                        { text: "Keep newest", value: "keep-latest" },
-                        { text: "Older than", value: "older-than" }
-                    ]
-                    textRole: "text"
-                    onActivated: {
-                        checker.generation_prune_mode = model[currentIndex].value
-                        autosaveSettings()
-                    }
-                }
-
-                SpinBox {
-                    id: generationPruneSpinBox
-                    from: 1
-                    to: 999
-                    value: 10
-                    editable: true
-                    onValueModified: {
-                        checker.generation_prune_value = value
-                        autosaveSettings()
-                    }
+                Label {
+                    text: "NixOS Update Checker"
+                    font.pointSize: Qt.application.font.pointSize * 1.4
+                    font.bold: true
                 }
 
                 Label {
-                    text: generationPruneModeCombo.currentIndex === 1 ? "days" : "generations"
+                    text: checker.build_info || ""
+                    font.pointSize: Qt.application.font.pointSize * 0.85
+                    color: palette.placeholderText
+                    visible: checker.build_info ? true : false
                 }
             }
+        }
 
-            Label { text: "" }  // empty cell for grid alignment
-            CheckBox {
-                id: runGcCheckbox
-                text: "Run garbage collection after update"
-                checked: checker.run_gc_after_update
-                onToggled: {
-                    checker.run_gc_after_update = checked
-                    autosaveSettings()
+        // Settings
+        GroupBox {
+            title: "Settings"
+            Layout.fillWidth: true
+
+            GridLayout {
+                anchors.fill: parent
+                columns: 2
+                rowSpacing: 8
+                columnSpacing: 12
+
+                Label { text: "Flake path:"; Layout.alignment: Qt.AlignRight | Qt.AlignVCenter }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 5
+
+                    TextField {
+                        id: flakePathField
+                        Layout.fillWidth: true
+                        placeholderText: "/etc/nixos"
+                        readOnly: true
+                    }
+
+                    Button {
+                        text: "Browse..."
+                        onClicked: folderDialog.open()
+                    }
+                }
+
+                Label { text: "Check every:"; Layout.alignment: Qt.AlignRight | Qt.AlignVCenter }
+                RowLayout {
+                    spacing: 10
+                    SpinBox {
+                        id: intervalSpinBox
+                        from: 1
+                        to: 99
+                        value: 1
+                        editable: true
+                        onValueModified: autosaveSettings()
+                    }
+                    ComboBox {
+                        id: unitCombo
+                        model: [
+                            { text: "Hours", value: "hours" },
+                            { text: "Days", value: "days" },
+                            { text: "Weeks", value: "weeks" }
+                        ]
+                        textRole: "text"
+                        currentIndex: 0
+                        onActivated: autosaveSettings()
+                    }
+                }
+
+                Label { text: "After update:"; Layout.alignment: Qt.AlignRight | Qt.AlignVCenter }
+                CheckBox {
+                    id: commitAndPushCheckbox
+                    text: "Commit and push after update"
+                    checked: checker.commit_and_push
+                    onToggled: {
+                        checker.commit_and_push = checked
+                        autosaveSettings()
+                    }
+                }
+
+                Item { width: 1; height: 1 }  // empty label column
+                CheckBox {
+                    id: pruneGenerationsCheckbox
+                    text: "Prune old system generations after update"
+                    checked: checker.prune_generations
+                    onToggled: {
+                        checker.prune_generations = checked
+                        autosaveSettings()
+                    }
+                }
+
+                Item { width: 1; height: 1 }  // empty label column
+                RowLayout {
+                    spacing: 8
+                    enabled: pruneGenerationsCheckbox.checked
+                    Layout.leftMargin: pruneGenerationsCheckbox.indicator.width + pruneGenerationsCheckbox.spacing
+
+                    ComboBox {
+                        id: generationPruneModeCombo
+                        model: [
+                            { text: "Keep newest", value: "keep-latest" },
+                            { text: "Older than", value: "older-than" }
+                        ]
+                        textRole: "text"
+                        onActivated: {
+                            checker.generation_prune_mode = model[currentIndex].value
+                            autosaveSettings()
+                        }
+                    }
+
+                    SpinBox {
+                        id: generationPruneSpinBox
+                        from: 1
+                        to: 999
+                        value: 10
+                        editable: true
+                        onValueModified: {
+                            checker.generation_prune_value = value
+                            autosaveSettings()
+                        }
+                    }
+
+                    Label {
+                        text: generationPruneModeCombo.currentIndex === 1 ? "days" : "generations"
+                    }
+                }
+
+                Item { width: 1; height: 1 }  // empty label column
+                CheckBox {
+                    id: runGcCheckbox
+                    text: "Run garbage collection after update"
+                    checked: checker.run_gc_after_update
+                    onToggled: {
+                        checker.run_gc_after_update = checked
+                        autosaveSettings()
+                    }
                 }
             }
         }
@@ -568,20 +593,22 @@ ApplicationWindow {
         GroupBox {
             title: "Status"
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.minimumHeight: font.pixelSize * 5 * 1.6 + 40
+            Layout.fillHeight: !outputExpanded || (packageListExpanded && checker.has_updates)
             clip: true
 
             ColumnLayout {
                 anchors.fill: parent
-                spacing: 5
+                spacing: 6
 
                 Label {
-                    text: "Last check: " + (checker.last_check_time || "Never")
+                    text: "Last checked " + (checker.last_check_time || "never")
+                    color: palette.placeholderText
                 }
 
                 Label {
                     text: checker.status_message || "Ready"
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
                     color: checker.status_message && checker.status_message.startsWith("Error") ? "red" : palette.text
                 }
 
@@ -621,6 +648,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.fillHeight: packageListExpanded && checker.has_updates
                     Layout.minimumHeight: packageListExpanded && checker.has_updates ? 80 : 0
+                    Layout.preferredHeight: packageListExpanded && checker.has_updates ? 160 : 0
                     visible: packageListExpanded && checker.has_updates
 
                     ListView {
@@ -693,7 +721,7 @@ ApplicationWindow {
                 }
 
                 // Spacer to push content to top
-                Item { Layout.fillHeight: true }
+                Item { Layout.fillHeight: true; visible: !outputExpanded }
             }
         }
 
@@ -734,7 +762,8 @@ ApplicationWindow {
                 // Custom styling for better visibility
                 background: Rectangle {
                     implicitHeight: 6
-                    color: "#e0e0e0"
+                    color: palette.mid
+                    opacity: 0.5
                     radius: 3
                 }
 
@@ -801,8 +830,8 @@ ApplicationWindow {
                 window: terminal.window
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.minimumHeight: 300
-                Layout.preferredHeight: 350
+                Layout.minimumHeight: 150
+                Layout.preferredHeight: 300
                 visible: outputExpanded
                 focus: true
                 activeFocusOnTab: true
@@ -850,6 +879,7 @@ ApplicationWindow {
 
             Button {
                 text: terminal.running ? "Updating..." : "Run Update"
+                highlighted: true
                 enabled: checker.has_updates && !terminal.running
                 onClicked: {
                     var flakePath = checker.get_update_script_path()
@@ -890,65 +920,88 @@ ApplicationWindow {
         root.hide()
     }
 
-    // Reboot confirmation dialog
-    Dialog {
+    // Reboot confirmation dialog. This is a separate top-level window rather
+    // than an in-scene Dialog: the terminal is a native child window, which
+    // always draws above QML popups.
+    Window {
         id: rebootDialog
         title: "Reboot Required"
-        modal: true
-        anchors.centerIn: parent
-        width: 450
-        height: 320
+        transientParent: root
+        flags: Qt.Dialog | Qt.WindowStaysOnTopHint
+        modality: Qt.ApplicationModal
+        width: 460
+        height: 340
+        minimumWidth: 380
+        minimumHeight: 260
 
         property string rebootPackages: ""
 
-        contentItem: ColumnLayout {
-            spacing: 10
+        function open() {
+            x = root.x + (root.width - width) / 2
+            y = root.y + (root.height - height) / 2
+            show()
+            raise()
+            requestActivate()
+        }
 
-            Label {
-                text: "The system was updated with changes that require a reboot to take effect:"
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
-            }
+        Pane {
+            anchors.fill: parent
+            padding: 18
 
-            ScrollView {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                Layout.minimumHeight: 80
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 12
 
-                ListView {
-                    clip: true
-                    model: rebootDialog.rebootPackages ? rebootDialog.rebootPackages.split(", ") : []
-                    delegate: Label {
-                        text: "  \u2022 " + modelData
-                        font.bold: true
-                        font.family: "monospace"
-                        width: ListView.view.width
-                        padding: 2
+                Label {
+                    text: "The system was updated with changes that require a reboot to take effect:"
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+
+                Frame {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    padding: 6
+
+                    ScrollView {
+                        anchors.fill: parent
+
+                        ListView {
+                            clip: true
+                            model: rebootDialog.rebootPackages ? rebootDialog.rebootPackages.split(", ") : []
+                            delegate: Label {
+                                text: "\u2022 " + modelData
+                                font.family: "monospace"
+                                width: ListView.view.width
+                                padding: 3
+                            }
+                        }
                     }
                 }
-            }
 
-            Label {
-                text: "Would you like to reboot now?"
-                Layout.fillWidth: true
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 10
-                Item { Layout.fillWidth: true }
-                Button {
-                    text: "Yes"
-                    onClicked: {
-                        rebootDialog.close()
-                        Qt.callLater(function() {
-                            checker.reboot_system()
-                        })
-                    }
+                Label {
+                    text: "Would you like to reboot now?"
+                    Layout.fillWidth: true
                 }
-                Button {
-                    text: "No"
-                    onClicked: rebootDialog.close()
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Item { Layout.fillWidth: true }
+                    Button {
+                        text: "Later"
+                        onClicked: rebootDialog.close()
+                    }
+                    Button {
+                        text: "Reboot Now"
+                        highlighted: true
+                        onClicked: {
+                            rebootDialog.close()
+                            Qt.callLater(function() {
+                                checker.reboot_system()
+                            })
+                        }
+                    }
                 }
             }
         }
