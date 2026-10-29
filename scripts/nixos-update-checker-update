@@ -109,8 +109,17 @@ if [ "$COMMIT_AND_PUSH" = "1" ]; then
         echo "${YELLOW}No SSH agent socket found; git push may ask for a key passphrase${NC}"
     fi
 
-    git add -A
-    git commit -m "$COMMIT_MSG" || echo "${YELLOW}Nothing to commit${NC}"
+    # Commit only flake.lock: it is the one file this script changes (via
+    # `nix flake update`). A blanket `git add -A` sweeps up unrelated work in
+    # progress in the flake directory -- someone editing configuration.nix while
+    # an update runs -- and pushes it to the remote under this generic message.
+    # Committing the path explicitly also ignores anything already staged there.
+    if git diff --quiet HEAD -- flake.lock; then
+        echo "${YELLOW}No flake.lock changes to commit${NC}"
+    else
+        git commit -m "$COMMIT_MSG" -- flake.lock \
+            || echo "${YELLOW}Nothing to commit${NC}"
+    fi
     echo ""
     echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
     # Never let ssh block on an interactive prompt: this runs in an embedded
