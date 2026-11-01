@@ -33,3 +33,7 @@ cc = "1.0"
 [profile.release]
 debug = false
 incremental = true
+
+# Dependencies stay fully optimized; this keeps edit rebuilds short.
+[profile.release.package.nixos-update-checker]
+opt-level = 1

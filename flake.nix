@@ -68,6 +68,25 @@
           export QMAKE="${qtEnv}/bin/qmake"
           exec ${rustToolchain}/bin/cargo "$@"
         '';
+
+        cargoDeps = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./Cargo.lock;
+        };
+
+        # cxx-qt declares a dependency on src/assertion_utils.h, which the
+        # published crates don't ship. Cargo checks that for vendored sources,
+        # so the missing file would rerun these build scripts on every build.
+        vendorDir = pkgs.runCommand "cargo-vendor-persistent" { } ''
+          cp -a ${cargoDeps} $out
+          chmod u+w $out
+          for crate in $out/cxx-qt-lib-[0-9]* $out/cxx-qt-lib-extras-[0-9]*; do
+            original=$(readlink -f "$crate")
+            rm "$crate"
+            cp -r "$original" "$crate"
+            chmod -R u+w "$crate"
+            touch "$crate/src/assertion_utils.h"
+          done
+        '';
       in
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
@@ -75,9 +94,7 @@
           version = "0.1.0";
           src = ./.;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-          };
+          inherit cargoDeps;
 
           nativeBuildInputs = nativeBuildInputs ++ [ pkgs.copyDesktopItems pkgs.qt6.wrapQtAppsHook pkgs.mold pkgs.rsync ];
           inherit buildInputs;
@@ -124,7 +141,7 @@
             rsync -rc --no-times --no-perms --delete ./ "$workDir/src/"
             # The per-build copy gets new mtimes, which would rebuild every
             # dependency; the store path never changes.
-            sed -i "s|^directory = .*|directory = \"$cargoDeps\"|" "$NIX_BUILD_TOP/.cargo/config.toml"
+            sed -i "s|^directory = .*|directory = \"${vendorDir}\"|" "$NIX_BUILD_TOP/.cargo/config.toml"
             # The linker wrapper rejects output paths outside the build dir.
             export NIX_ENFORCE_PURITY=0
             (
