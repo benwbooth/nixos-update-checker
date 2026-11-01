@@ -120,6 +120,7 @@ fn main() {
                 .filter(|s| !s.is_empty())
         })
         .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rerun-if-env-changed=BUILD_GIT_HASH");
     println!("cargo:rustc-env=BUILD_GIT_HASH={}", git_hash);
 
     // Store build time as unix timestamp - formatted at runtime with local timezone

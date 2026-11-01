@@ -25,7 +25,7 @@ Description=NixOS Update Checker (dev)
 [Service]
 Type=simple
 WorkingDirectory=$PROJECT_DIR
-ExecStart=/nix/var/nix/profiles/system/sw/bin/nix develop --command cargo run
+ExecStart=/run/current-system/sw/bin/bash -c "nix build . -o result-dev && exec ./result-dev/bin/nixos-update-checker"
 Restart=on-failure
 RestartSec=2
 Environment=RUST_BACKTRACE=1
@@ -39,7 +39,7 @@ Description=NixOS Update Checker (dev with watch)
 [Service]
 Type=simple
 WorkingDirectory=$PROJECT_DIR
-ExecStart=/nix/var/nix/profiles/system/sw/bin/nix develop --command cargo watch -x run -w src -w qml -w resources -w build.rs -w Cargo.toml
+ExecStart=/nix/var/nix/profiles/system/sw/bin/nix develop --command cargo watch -s 'nix build . -o result-dev && ./result-dev/bin/nixos-update-checker' -w src -w qml -w resources -w build.rs -w Cargo.toml
 Restart=on-failure
 RestartSec=2
 Environment=RUST_BACKTRACE=1

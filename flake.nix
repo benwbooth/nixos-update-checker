@@ -79,7 +79,7 @@
             lockFile = ./Cargo.lock;
           };
 
-          nativeBuildInputs = nativeBuildInputs ++ [ pkgs.copyDesktopItems pkgs.qt6.wrapQtAppsHook ];
+          nativeBuildInputs = nativeBuildInputs ++ [ pkgs.copyDesktopItems pkgs.qt6.wrapQtAppsHook pkgs.mold pkgs.rsync ];
           inherit buildInputs;
 
           # Don't use cmake/ninja as the main build system - they're only needed for cxx-qt internally
@@ -102,6 +102,44 @@
             export QTERMWIDGET_LIB_PATH="${qtermwidget}/lib"
             # Pass git hash to build.rs
             export BUILD_GIT_HASH="${self.shortRev or self.dirtyShortRev or "dirty"}"
+          '';
+
+          # Build in a persistent directory so dev and system builds keep
+          # cargo's incremental state. Falls back to a throwaway directory
+          # when the sandbox doesn't expose the cache.
+          doCheck = false;
+          buildPhase = ''
+            runHook preBuild
+            umask 000
+            workDir=$TMPDIR/cargo-nix
+            if [ -w /var/tmp/cargo-nix ]; then
+              workDir=/var/tmp/cargo-nix/nixos-update-checker
+            fi
+            mkdir -p "$workDir/src" "$workDir/target"
+            touch "$workDir"
+            # Build scripts copy read-only headers out of the store.
+            chmod -R a+rwX "$workDir/target"
+            # Store paths have a fixed mtime, so only rewrite files whose
+            # content changed; cargo's freshness check relies on that.
+            rsync -rc --no-times --no-perms --delete ./ "$workDir/src/"
+            # The per-build copy gets new mtimes, which would rebuild every
+            # dependency; the store path never changes.
+            sed -i "s|^directory = .*|directory = \"$cargoDeps\"|" "$NIX_BUILD_TOP/.cargo/config.toml"
+            # The linker wrapper rejects output paths outside the build dir.
+            export NIX_ENFORCE_PURITY=0
+            (
+              cd "$workDir/src"
+              # Vendored deps are configured in $NIX_BUILD_TOP/.cargo, above the source.
+              CARGO_HOME="$NIX_BUILD_TOP/.cargo" RUSTFLAGS="-C link-arg=-fuse-ld=mold" CARGO_TARGET_DIR="$workDir/target" \
+                cargo build --release --offline --locked -j "$NIX_BUILD_CORES"
+            )
+            install -Dm755 "$workDir/target/release/nixos-update-checker" bin/nixos-update-checker
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 bin/nixos-update-checker $out/bin/nixos-update-checker
+            runHook postInstall
           '';
 
           desktopItems = [
