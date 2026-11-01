@@ -79,13 +79,20 @@
         vendorDir = pkgs.runCommand "cargo-vendor-persistent" { } ''
           cp -a ${cargoDeps} $out
           chmod u+w $out
-          for crate in $out/cxx-qt-lib-[0-9]* $out/cxx-qt-lib-extras-[0-9]*; do
+          for crate in $out/cxx-qt-lib-[0-9]* $out/cxx-qt-lib-extras-[0-9]* $out/qt-build-utils-[0-9]*; do
             original=$(readlink -f "$crate")
             rm "$crate"
             cp -r "$original" "$crate"
             chmod -R u+w "$crate"
+          done
+          for crate in $out/cxx-qt-lib-[0-9]* $out/cxx-qt-lib-extras-[0-9]*; do
             touch "$crate/src/assertion_utils.h"
           done
+
+          # qrc_list's trailing blank line becomes an empty rerun-if-changed
+          # path, which reruns the C++ build on any change to the project.
+          substituteInPlace $out/qt-build-utils-[0-9]*/src/lib.rs \
+            --replace-fail ".split('\n')" ".lines()"
         '';
       in
       {
