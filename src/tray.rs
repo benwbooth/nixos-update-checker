@@ -504,7 +504,10 @@ impl qobject::UpdateChecker {
                     .set_generation_prune_value(config.generation_prune_value as i32);
 
                 // Set build info - format timestamp at runtime for local timezone
-                let build_epoch: i64 = env!("BUILD_TIMESTAMP_EPOCH").parse().unwrap_or(0);
+                let build_epoch: i64 = std::env::var("BUILD_TIMESTAMP_EPOCH")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
                 let build_time = if build_epoch > 0 {
                     let tz: chrono_tz::Tz = iana_time_zone::get_timezone()
                         .ok()
@@ -518,7 +521,7 @@ impl qobject::UpdateChecker {
                 };
                 self.as_mut().set_build_info(QString::from(&format!(
                     "Build Version: {} · {}",
-                    env!("BUILD_GIT_HASH"),
+                    std::env::var("BUILD_GIT_HASH").unwrap_or_else(|_| "unknown".to_string()),
                     build_time,
                 )));
 

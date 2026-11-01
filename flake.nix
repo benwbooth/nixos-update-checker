@@ -89,7 +89,7 @@
         '';
       in
       {
-        packages.default = pkgs.rustPlatform.buildRustPackage {
+        packages.compiled = pkgs.rustPlatform.buildRustPackage {
           pname = "nixos-update-checker";
           version = "0.1.0";
           src = ./.;
@@ -117,8 +117,6 @@
             # QTermWidget paths for embedding terminal
             export QTERMWIDGET_INCLUDE_PATH="${qtermwidget}/include"
             export QTERMWIDGET_LIB_PATH="${qtermwidget}/lib"
-            # Pass git hash to build.rs
-            export BUILD_GIT_HASH="${self.shortRev or self.dirtyShortRev or "dirty"}"
           '';
 
           # Build in a persistent directory so dev and system builds keep
@@ -204,6 +202,19 @@
             license = licenses.mit;
             platforms = platforms.linux;
           };
+        };
+
+        # Build info lives here rather than in the compiled package, so a commit
+        # that doesn't change the source reuses the compile.
+        packages.default = pkgs.symlinkJoin {
+          name = "nixos-update-checker-0.1.0";
+          paths = [ self.packages.${system}.compiled ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          postBuild = ''
+            wrapProgram $out/bin/nixos-update-checker \
+              --set BUILD_GIT_HASH "${self.shortRev or self.dirtyShortRev or "dirty"}" \
+              --set BUILD_TIMESTAMP_EPOCH "${toString (self.lastModified or 0)}"
+          '';
         };
 
         devShells.default = pkgs.mkShell {
