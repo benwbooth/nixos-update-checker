@@ -184,6 +184,41 @@ fn get_git_branch(repo_path: &Path) -> Result<String, FlakeCheckError> {
     }
 }
 
+/// Replace the cache with a plain copy of the local flake, without its .git directory or
+/// top-level `result*` build links. Needs only read access, so it works for any user.
+fn copy_local_flake(original_path: &Path, cache_path: &Path) -> Result<(), FlakeCheckError> {
+    fn copy_dir(src: &Path, dst: &Path, top: bool) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if top && (name_str == ".git" || name_str.starts_with("result")) {
+                continue;
+            }
+            let file_type = entry.file_type()?;
+            let target = dst.join(&name);
+            if file_type.is_dir() {
+                copy_dir(&entry.path(), &target, false)?;
+            } else if file_type.is_symlink() {
+                std::os::unix::fs::symlink(std::fs::read_link(entry.path())?, &target)?;
+            } else {
+                std::fs::copy(entry.path(), &target)?;
+            }
+        }
+        Ok(())
+    }
+
+    if cache_path.exists() {
+        std::fs::remove_dir_all(cache_path).map_err(|e| {
+            FlakeCheckError::NixError(format!("Failed to clear cache directory: {}", e))
+        })?;
+    }
+    copy_dir(original_path, cache_path, true).map_err(|e| {
+        FlakeCheckError::NixError(format!("Failed to copy local flake: {}", e))
+    })
+}
+
 /// Clone or update the cache repository
 async fn sync_cache_repo(original_path: &Path, cache_path: &Path) -> Result<(), FlakeCheckError> {
     // Get the remote URL from the original repo (reads .git/config directly)
@@ -272,8 +307,14 @@ pub async fn check_for_updates(flake_path: &Path) -> Result<CheckResult, FlakeCh
     // Get or create the cache directory
     let cache_path = get_cache_dir(flake_path);
 
-    // Sync the cache with the original repo
-    sync_cache_repo(flake_path, &cache_path).await?;
+    // Sync the cache with the original repo. The remote can be out of reach for the user
+    // running this, e.g. a child's session checking a parent-owned checkout of a private repo.
+    // Their local checkout has everything the check needs (the flake and its lock file; the
+    // inputs are fetched by nix), so fall back to a copy of it.
+    if let Err(e) = sync_cache_repo(flake_path, &cache_path).await {
+        eprintln!("Remote sync failed ({e}); checking against the local checkout instead");
+        copy_local_flake(flake_path, &cache_path)?;
+    }
 
     // Run nix flake update in the cache directory
     eprintln!("Running nix flake update in {}", cache_path.display());
@@ -847,6 +888,31 @@ these derivations will be built:
             extract_package_info("/nix/store/abcdefghijklmnopqrstuvwxyz012345-system-path.drv"),
             None
         );
+    }
+
+    #[test]
+    fn test_copy_local_flake_skips_git_and_results() {
+        let root = std::env::temp_dir().join(format!("nuc-copy-test-{}", std::process::id()));
+        let src = root.join("src");
+        let dst = root.join("dst");
+        std::fs::create_dir_all(src.join(".git")).unwrap();
+        std::fs::create_dir_all(src.join("hosts/pc")).unwrap();
+        std::fs::write(src.join("flake.nix"), "{}").unwrap();
+        std::fs::write(src.join("flake.lock"), "{}").unwrap();
+        std::fs::write(src.join("hosts/pc/configuration.nix"), "{}").unwrap();
+        std::fs::write(src.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+        std::os::unix::fs::symlink("/nonexistent", src.join("result")).unwrap();
+        std::fs::create_dir_all(dst.join("stale")).unwrap();
+
+        copy_local_flake(&src, &dst).unwrap();
+
+        assert!(dst.join("flake.nix").exists());
+        assert!(dst.join("flake.lock").exists());
+        assert!(dst.join("hosts/pc/configuration.nix").exists());
+        assert!(!dst.join(".git").exists());
+        assert!(std::fs::symlink_metadata(dst.join("result")).is_err());
+        assert!(!dst.join("stale").exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

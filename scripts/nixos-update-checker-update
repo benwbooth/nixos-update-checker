@@ -80,13 +80,26 @@ echo ""
 
 cd "$FLAKE_PATH"
 echo "${BLUE}📁 Working directory:${NC} $(pwd)"
+
+# Git and the lock file belong to whoever owns the flake. When that is a regular user (Ben's
+# checkout on a child's PC, say), run them as that user: commits get their identity and
+# pushes use their SSH key, whoever clicked Update. A root-owned flake keeps running as root.
+FLAKE_OWNER=$(stat -c %U "$FLAKE_PATH")
+as_owner() {
+    if [ "$FLAKE_OWNER" = root ]; then
+        "$@"
+    else
+        runuser -u "$FLAKE_OWNER" -- "$@"
+    fi
+}
+echo "${BLUE}👤 Flake owner:${NC} $FLAKE_OWNER"
 echo ""
 
 # Add flake path to git safe directories (needed even as root in newer git)
 git config --global --add safe.directory "$FLAKE_PATH"
 
 echo "${BOLD}${YELLOW}━━━ Updating flake inputs ━━━${NC}"
-if ! NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update; then
+if ! as_owner env NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update; then
     echo "${RED}Failed to update flake inputs${NC}"
     FAILED=1
 fi
@@ -101,7 +114,8 @@ echo ""
 
 if [ "$COMMIT_AND_PUSH" = "1" ]; then
     echo "${BOLD}${BLUE}━━━ Committing changes ━━━${NC}"
-    # Keep Git as root for root-owned flakes, but forward the user's SSH agent for push.
+    # Forward the invoking user's SSH agent for push. When git runs as a different owner who
+    # can't open that socket, ssh falls back to the owner's own keys.
     find_ssh_agent_socket
     if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ]; then
         echo "${BLUE}Using SSH agent:${NC} $SSH_AUTH_SOCK"
@@ -114,10 +128,10 @@ if [ "$COMMIT_AND_PUSH" = "1" ]; then
     # progress in the flake directory -- someone editing configuration.nix while
     # an update runs -- and pushes it to the remote under this generic message.
     # Committing the path explicitly also ignores anything already staged there.
-    if git diff --quiet HEAD -- flake.lock; then
+    if as_owner git diff --quiet HEAD -- flake.lock; then
         echo "${YELLOW}No flake.lock changes to commit${NC}"
     else
-        git commit -m "$COMMIT_MSG" -- flake.lock \
+        as_owner git commit -m "$COMMIT_MSG" -- flake.lock \
             || echo "${YELLOW}Nothing to commit${NC}"
     fi
     echo ""
@@ -130,7 +144,7 @@ if [ "$COMMIT_AND_PUSH" = "1" ]; then
         echo "${YELLOW}SSH agent has no keys loaded; push will likely be skipped.${NC}"
         echo "${YELLOW}Run 'ssh-add' as your user to load your key, then push manually.${NC}"
     fi
-    GIT_SSH_COMMAND="ssh -o BatchMode=yes" git push \
+    as_owner env GIT_SSH_COMMAND="ssh -o BatchMode=yes" git push \
         || echo "${YELLOW}Push failed or no remote configured (agent has no key?)${NC}"
 else
     echo "${YELLOW}Skipping commit and push (disabled in settings)${NC}"
