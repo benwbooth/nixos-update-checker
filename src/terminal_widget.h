@@ -2,6 +2,8 @@
 #define TERMINAL_WIDGET_H
 
 #include <QObject>
+#include <QPointer>
+#include <QTimer>
 #include <QWindow>
 #include <QWidget>
 #include <qtermwidget6/qtermwidget.h>
@@ -41,7 +43,15 @@ protected:
 private:
     void setupTerminal();
     void showContextMenu(const QPoint &pos);
+    bool handleDragScroll(QWidget *display, QEvent *event);
+    void dragScrollTick();
     QTermWidget *m_terminal;
+    // Selection autoscroll: TerminalDisplay only scrolls when the mouse moves
+    // past its edge, so replay the last drag position while it stays there.
+    QPointer<QWidget> m_display;
+    QTimer m_dragScrollTimer;
+    QPointF m_dragPos;
+    bool m_dragging = false;
     bool m_running;
 };
 

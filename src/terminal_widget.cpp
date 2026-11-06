@@ -3,15 +3,20 @@
 #include <QProcess>
 #include <QDebug>
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QBuffer>
 #include <QKeyEvent>
 #include <QMenu>
+#include <QMouseEvent>
+#include <QWheelEvent>
 
 TerminalWidget::TerminalWidget(QObject *parent)
     : QObject(parent)
     , m_terminal(nullptr)
     , m_running(false)
 {
+    m_dragScrollTimer.setInterval(50);
+    connect(&m_dragScrollTimer, &QTimer::timeout, this, &TerminalWidget::dragScrollTick);
     setupTerminal();
 }
 
@@ -38,8 +43,11 @@ void TerminalWidget::setupTerminal() {
     m_terminal->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_terminal, &QWidget::customContextMenuRequested,
             this, &TerminalWidget::showContextMenu);
-    if (QWidget *display = m_terminal->focusProxy()) {
-        display->installEventFilter(this);
+    m_dragScrollTimer.stop();
+    m_dragging = false;
+    m_display = m_terminal->focusProxy();
+    if (m_display) {
+        m_display->installEventFilter(this);
     }
 
     // Set environment to support colors
@@ -127,7 +135,59 @@ void TerminalWidget::selectAll() {
     m_terminal->setSelectionEnd(totalLines, m_terminal->screenColumnsCount());
 }
 
+bool TerminalWidget::handleDragScroll(QWidget *display, QEvent *event) {
+    switch (event->type()) {
+    case QEvent::MouseButtonPress: {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() == Qt::LeftButton) {
+            m_dragging = true;
+            m_dragPos = mouse->position();
+        }
+        break;
+    }
+    case QEvent::MouseMove: {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (!m_dragging || !(mouse->buttons() & Qt::LeftButton)) break;
+        m_dragPos = mouse->position();
+        const bool outside = m_dragPos.y() < 0 || m_dragPos.y() >= display->height();
+        if (outside && !m_dragScrollTimer.isActive()) m_dragScrollTimer.start();
+        else if (!outside) m_dragScrollTimer.stop();
+        break;
+    }
+    case QEvent::MouseButtonRelease:
+        if (static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
+            m_dragging = false;
+            m_dragScrollTimer.stop();
+        }
+        break;
+    case QEvent::Wheel:
+        // Scrolling with the wheel mid-drag moves the view but not the
+        // selection end; replay the drag position once the view has moved.
+        if (m_dragging) QTimer::singleShot(0, this, &TerminalWidget::dragScrollTick);
+        break;
+    default:
+        break;
+    }
+    return false;
+}
+
+void TerminalWidget::dragScrollTick() {
+    if (!m_display || !m_dragging || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) {
+        m_dragging = false;
+        m_dragScrollTimer.stop();
+        return;
+    }
+    // A synthetic move makes TerminalDisplay::extendSelection scroll one step
+    // further and stretch the selection to the newly revealed line.
+    QMouseEvent move(QEvent::MouseMove, m_dragPos, m_display->mapToGlobal(m_dragPos),
+                     Qt::NoButton, Qt::LeftButton, QGuiApplication::keyboardModifiers());
+    QCoreApplication::sendEvent(m_display, &move);
+}
+
 bool TerminalWidget::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == m_display && handleDragScroll(m_display, event)) {
+        return true;
+    }
     if (event->type() != QEvent::KeyPress && event->type() != QEvent::ShortcutOverride) {
         return QObject::eventFilter(watched, event);
     }
