@@ -136,14 +136,21 @@
             workDir=$TMPDIR/cargo-nix
             if [ -w /var/tmp/cargo-nix ]; then
               workDir=/var/tmp/cargo-nix/nixos-update-checker
+              # Builds run as whichever nixbld user the daemon picks; a cache left
+              # with entries this one can't write is useless, so build without it.
+              if [ -n "$(find "$workDir" ! -writable -print -quit 2>/dev/null)" ]; then
+                echo "warning: $workDir has entries this build user can't write; not using it" >&2
+                workDir=$TMPDIR/cargo-nix
+              fi
             fi
             mkdir -p "$workDir/src" "$workDir/target"
             touch "$workDir"
-            # Build scripts copy read-only headers out of the store.
-            chmod -R a+rwX "$workDir/target"
+            # Build scripts copy read-only headers out of the store. Only a file's
+            # owner may chmod it; everything else was created world-writable.
+            find "$workDir/target" -user "$(id -u)" -exec chmod a+rwX {} +
             # Store paths have a fixed mtime, so only rewrite files whose
             # content changed; cargo's freshness check relies on that.
-            rsync -rc --no-times --no-perms --delete ./ "$workDir/src/"
+            rsync -rc --no-times --no-perms --chmod=ugo+rwX --delete ./ "$workDir/src/"
             # The per-build copy gets new mtimes, which would rebuild every
             # dependency; the store path never changes.
             sed -i "s|^directory = .*|directory = \"${vendorDir}\"|" "$NIX_BUILD_TOP/.cargo/config.toml"
