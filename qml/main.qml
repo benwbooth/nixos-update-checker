@@ -24,6 +24,23 @@ ApplicationWindow {
     property bool updateJustCompleted: false  // Track if update just finished successfully
     property string lastLine: ""  // Last non-empty line from terminal output
 
+    // Target height after collapsing a pane. Applied once the layout has
+    // recomputed minimumHeight (which may lag a frame behind the collapse).
+    property real pendingHeight: -1
+    function applyPendingHeight() {
+        // Wait until the layout has caught up, or the old minimum blocks the shrink.
+        if (pendingHeight < 0 || minimumHeight > pendingHeight) return
+        height = pendingHeight
+        pendingHeight = -1
+    }
+    onMinimumHeightChanged: {
+        // Minimum has now been recomputed, so it is safe to clamp to it.
+        if (pendingHeight < 0) return
+        height = Math.max(minimumHeight, pendingHeight)
+        pendingHeight = -1
+    }
+    onPackageListExpandedChanged: if (packageListExpanded) pendingHeight = -1
+
     // Progress tracking for update process
     QtObject {
         id: progressInfo
@@ -597,6 +614,7 @@ ApplicationWindow {
             clip: true
 
             ColumnLayout {
+                id: statusColumn
                 anchors.fill: parent
                 spacing: 6
 
@@ -645,11 +663,24 @@ ApplicationWindow {
 
                 // Expandable package list
                 ScrollView {
+                    id: packageListScroll
                     Layout.fillWidth: true
                     Layout.fillHeight: packageListExpanded && checker.has_updates
                     Layout.minimumHeight: packageListExpanded && checker.has_updates ? 80 : 0
                     Layout.preferredHeight: packageListExpanded && checker.has_updates ? 160 : 0
                     visible: packageListExpanded && checker.has_updates
+
+                    // Expanding grows the window via minimumHeight; on collapse,
+                    // give the space back by shrinking the window by however
+                    // tall the list was (keeps any extra height the user added).
+                    property real shownHeight: 0
+                    onHeightChanged: if (visible && height > 0) shownHeight = height
+                    onVisibleChanged: {
+                        if (visible || shownHeight <= 0) return
+                        root.pendingHeight = root.height - shownHeight - statusColumn.spacing
+                        shownHeight = 0
+                        Qt.callLater(root.applyPendingHeight)
+                    }
 
                     ListView {
                         id: packageListView
