@@ -15,6 +15,9 @@ TerminalWidget::TerminalWidget(QObject *parent)
     , m_terminal(nullptr)
     , m_running(false)
 {
+    // Watch application-wide so keys delivered to the QML window can be
+    // routed to the terminal (see m_keyboardCaptured).
+    qApp->installEventFilter(this);
     m_dragScrollTimer.setInterval(50);
     connect(&m_dragScrollTimer, &QTimer::timeout, this, &TerminalWidget::dragScrollTick);
     setupTerminal();
@@ -45,10 +48,9 @@ void TerminalWidget::setupTerminal() {
             this, &TerminalWidget::showContextMenu);
     m_dragScrollTimer.stop();
     m_dragging = false;
+    // The application-wide filter installed in the constructor sees the
+    // display's events too; a second per-widget filter would run them twice.
     m_display = m_terminal->focusProxy();
-    if (m_display) {
-        m_display->installEventFilter(this);
-    }
 
     // Set environment to support colors
     QStringList env = QProcess::systemEnvironment();
@@ -64,6 +66,7 @@ void TerminalWidget::setupTerminal() {
 }
 
 TerminalWidget::~TerminalWidget() {
+    qApp->removeEventFilter(this);
     if (m_terminal) {
         delete m_terminal;
         m_terminal = nullptr;
@@ -184,8 +187,56 @@ void TerminalWidget::dragScrollTick() {
     QCoreApplication::sendEvent(m_display, &move);
 }
 
+bool TerminalWidget::forwardKeyboard(QObject *watched, QEvent *event) {
+    if (!m_terminal || !m_display || !watched->isWindowType()) {
+        return false;
+    }
+    // Events already delivered to the terminal's own window (X11, or a
+    // compositor that does focus subsurfaces) need no help.
+    QWindow *terminalWindow = m_terminal->windowHandle();
+    if (watched == terminalWindow) {
+        return false;
+    }
+
+    switch (event->type()) {
+    case QEvent::MouseButtonPress:
+        // Clicking anywhere else in the app window hands the keyboard back.
+        m_keyboardCaptured = false;
+        return false;
+    case QEvent::KeyPress:
+    case QEvent::KeyRelease:
+        break;
+    default:
+        return false;
+    }
+
+    if (!m_keyboardCaptured || !m_terminal->isVisible()) {
+        return false;
+    }
+    // Only keys aimed at the window that hosts the terminal.
+    if (terminalWindow && terminalWindow->parent() && watched != terminalWindow->parent()) {
+        return false;
+    }
+
+    auto *key = static_cast<QKeyEvent *>(event);
+    QKeyEvent copy(key->type(), key->key(), key->modifiers(), key->nativeScanCode(),
+                   key->nativeVirtualKey(), key->nativeModifiers(), key->text(),
+                   key->isAutoRepeat(), key->count());
+    QCoreApplication::sendEvent(m_display, &copy);
+    return true;
+}
+
 bool TerminalWidget::eventFilter(QObject *watched, QEvent *event) {
-    if (watched == m_display && handleDragScroll(m_display, event)) {
+    if (watched != m_display && forwardKeyboard(watched, event)) {
+        return true;
+    }
+    if (watched == m_display && event->type() == QEvent::MouseButtonPress) {
+        m_keyboardCaptured = true;
+    }
+    if (watched != m_display) {
+        return QObject::eventFilter(watched, event);
+    }
+    if (handleDragScroll(m_display, event)) {
         return true;
     }
     if (event->type() != QEvent::KeyPress && event->type() != QEvent::ShortcutOverride) {
@@ -258,6 +309,7 @@ void TerminalWidget::focusTerminal() {
     if (!m_terminal) {
         return;
     }
+    m_keyboardCaptured = true;
 
     // Activate the native window so the compositor delivers key events here.
     m_terminal->activateWindow();

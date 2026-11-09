@@ -136,16 +136,13 @@ if [ "$COMMIT_AND_PUSH" = "1" ]; then
     fi
     echo ""
     echo "${BOLD}${CYAN}━━━ Pushing to remote ━━━${NC}"
-    # Never let ssh block on an interactive prompt: this runs in an embedded
-    # terminal that may not accept keyboard input. BatchMode makes ssh fail
-    # fast (instead of asking for a key passphrase) when the agent has no
-    # usable key, so the update finishes cleanly and the user can push later.
+    # If the agent has no key, ssh asks for the passphrase in the embedded
+    # terminal, which forwards keyboard input to the running command.
     if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ] && ! SSH_AUTH_SOCK="$SSH_AUTH_SOCK" ssh-add -l >/dev/null 2>&1; then
-        echo "${YELLOW}SSH agent has no keys loaded; push will likely be skipped.${NC}"
-        echo "${YELLOW}Run 'ssh-add' as your user to load your key, then push manually.${NC}"
+        echo "${YELLOW}SSH agent has no keys loaded; enter your key passphrase if asked.${NC}"
     fi
-    as_owner env GIT_SSH_COMMAND="ssh -o BatchMode=yes" git push \
-        || echo "${YELLOW}Push failed or no remote configured (agent has no key?)${NC}"
+    as_owner git push \
+        || echo "${YELLOW}Push failed or no remote configured${NC}"
 else
     echo "${YELLOW}Skipping commit and push (disabled in settings)${NC}"
 fi

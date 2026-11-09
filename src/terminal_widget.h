@@ -44,6 +44,7 @@ private:
     void setupTerminal();
     void showContextMenu(const QPoint &pos);
     bool handleDragScroll(QWidget *display, QEvent *event);
+    bool forwardKeyboard(QObject *watched, QEvent *event);
     void dragScrollTick();
     QTermWidget *m_terminal;
     // Selection autoscroll: TerminalDisplay only scrolls when the mouse moves
@@ -52,6 +53,10 @@ private:
     QTimer m_dragScrollTimer;
     QPointF m_dragPos;
     bool m_dragging = false;
+    // On Wayland the embedded terminal is a subsurface, and the compositor
+    // only sends keys to the top-level surface. While this is set, keys that
+    // reach the QML window are forwarded to the terminal instead.
+    bool m_keyboardCaptured = false;
     bool m_running;
 };
 
