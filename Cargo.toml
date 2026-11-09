@@ -48,3 +48,8 @@ debug = false
 debug-assertions = false
 overflow-checks = false
 incremental = true
+
+# See vendor/qt-build-utils/PATCHED.md: without it the Qt/C++ build step
+# reruns on every build.
+[patch.crates-io]
+qt-build-utils = { path = "vendor/qt-build-utils" }
