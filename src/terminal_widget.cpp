@@ -8,6 +8,7 @@
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QScrollBar>
 #include <QWheelEvent>
 
 TerminalWidget::TerminalWidget(QObject *parent)
@@ -34,6 +35,8 @@ void TerminalWidget::setupTerminal() {
 
     // Configure terminal appearance
     m_terminal->setScrollBarPosition(QTermWidget::ScrollBarRight);
+    // Keep plenty of scrollback so the wheel has output to scroll through.
+    m_terminal->setHistorySize(10000);
     m_terminal->setColorScheme("Linux");
     m_terminal->setTerminalFont(QFont("Monospace", 10));
     m_terminal->setTerminalOpacity(1.0);
@@ -174,6 +177,18 @@ bool TerminalWidget::handleDragScroll(QWidget *display, QEvent *event) {
     return false;
 }
 
+bool TerminalWidget::swallowWheel() const {
+    // With nothing in the scrollback, TerminalDisplay turns the wheel into
+    // Up/Down key presses for pagers like less. Update commands never read
+    // them, so the tty just echoes ^[[A / ^[[B into the output. Drop the
+    // wheel instead; once there is history it scrolls the view as usual.
+    if (!m_terminal) {
+        return false;
+    }
+    auto *bar = m_terminal->findChild<QScrollBar *>();
+    return bar && bar->maximum() == 0;
+}
+
 void TerminalWidget::dragScrollTick() {
     if (!m_display || !m_dragging || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) {
         m_dragging = false;
@@ -237,6 +252,9 @@ bool TerminalWidget::eventFilter(QObject *watched, QEvent *event) {
         return QObject::eventFilter(watched, event);
     }
     if (handleDragScroll(m_display, event)) {
+        return true;
+    }
+    if (event->type() == QEvent::Wheel && swallowWheel()) {
         return true;
     }
     if (event->type() != QEvent::KeyPress && event->type() != QEvent::ShortcutOverride) {

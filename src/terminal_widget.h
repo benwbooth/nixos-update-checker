@@ -46,6 +46,7 @@ private:
     bool handleDragScroll(QWidget *display, QEvent *event);
     bool forwardKeyboard(QObject *watched, QEvent *event);
     void dragScrollTick();
+    bool swallowWheel() const;
     QTermWidget *m_terminal;
     // Selection autoscroll: TerminalDisplay only scrolls when the mouse moves
     // past its edge, so replay the last drag position while it stays there.
