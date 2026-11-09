@@ -37,3 +37,14 @@ incremental = true
 # Dependencies stay fully optimized; this keeps edit rebuilds short.
 [profile.release.package.nixos-update-checker]
 opt-level = 1
+
+# One build for everything: devloop (the app you run), cargo run, cargo test
+# and the editor all use this profile, so they share target/debug. It's
+# release-grade (optimized, no debug info) and stays incremental, so a small
+# change rebuilds in seconds. `cargo build --release` is only for packaging.
+[profile.dev]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = true
