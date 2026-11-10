@@ -31,6 +31,21 @@ nix develop --command cargo run
 - System tray requires Qt.labs.platform (QApplication, not QGuiApplication)
 - Do NOT run `cargo clean` unnecessarily - it wastes time rebuilding
 
+## System Theme (KDE)
+
+The app draws with the system KDE theme, which takes two things:
+
+- `resources/qtquickcontrols2.conf` (in the qrc, so it applies to every way of
+  starting the app) selects the `org.kde.desktop` Quick Controls style.
+- The dev shell puts this flake's Qt/KDE plugins and QML modules first on
+  `QT_PLUGIN_PATH` / `QML_IMPORT_PATH` (see `qtRuntimePaths` in `flake.nix`).
+  The packaged build gets the same from `wrapQtAppsHook`.
+
+Both are needed: the Plasma session exports its own plugin paths, but those
+plugins are built against a newer Qt than this flake's, so Qt refuses to load
+them ("uses incompatible Qt library"). With the style selected and no loadable
+plugin, QML fails to import `QtQuick.Controls` at all and no window appears.
+
 ## Known Qt Bugs
 
 - **Do NOT add `icon.source` to ApplicationWindow** - it breaks Qt.labs.platform.SystemTrayIcon (causes tray icon to not appear)

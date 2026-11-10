@@ -34,6 +34,44 @@
         # QTermWidget for embedded terminal
         qtermwidget = pkgs.lxqt.qtermwidget;
 
+        # What the app loads at runtime to look like the rest of Plasma: the
+        # KDE platform theme (Breeze palette and fonts), the Breeze widget
+        # style the embedded terminal draws with, and the org.kde.desktop
+        # Quick Controls style the QML UI asks for in
+        # resources/qtquickcontrols2.conf.
+        kdeStyleInputs = with pkgs; [
+          kdePackages.qqc2-desktop-style
+          kdePackages.plasma-integration
+          kdePackages.breeze
+          kdePackages.breeze-icons
+        ];
+
+        # org.kde.desktop imports Kirigami, which imports a dozen more QML
+        # modules, so the search paths come from the whole closure rather than
+        # a hand-written list that would drift out of date. wrapQtAppsHook
+        # does the same for the packaged build; this is for the dev shell,
+        # which gets no wrapper.
+        qtRuntimePaths = pkgs.runCommand "qt-runtime-paths" {
+          closure = pkgs.closureInfo {
+            rootPaths = kdeStyleInputs ++ [ qtEnv qtermwidget ];
+          };
+        } ''
+          plugins=""
+          qml=""
+          while read -r path; do
+            if [ -d "$path/lib/qt-6/plugins" ]; then
+              plugins="$plugins:$path/lib/qt-6/plugins"
+            fi
+            if [ -d "$path/lib/qt-6/qml" ]; then
+              qml="$qml:$path/lib/qt-6/qml"
+            fi
+          done < "$closure/store-paths"
+          {
+            echo "QT_RUNTIME_PLUGIN_PATH=''${plugins#:}"
+            echo "QT_RUNTIME_QML_PATH=''${qml#:}"
+          } > $out
+        '';
+
         nativeBuildInputs = with pkgs; [
           rustToolchain
           pkg-config
@@ -250,6 +288,16 @@
             echo "Run 'cargo build' to build the project"
             export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PWD/scripts:$PATH"
             export QMAKE="${qtEnv}/bin/qmake"
+            # Look for plugins and QML modules in this flake's Qt first. The
+            # Plasma session points these variables at its own, built against
+            # a different Qt than the one we link, so Qt6 refuses to load
+            # them: without this the app comes up with no KDE platform theme
+            # and no org.kde.desktop style, i.e. not the system theme.
+            source ${qtRuntimePaths}
+            export QT_PLUGIN_PATH="$QT_RUNTIME_PLUGIN_PATH''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
+            export QML_IMPORT_PATH="$QT_RUNTIME_QML_PATH''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
+            export QML2_IMPORT_PATH="$QT_RUNTIME_QML_PATH''${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+            export NIXPKGS_QT6_QML_IMPORT_PATH="$QT_RUNTIME_QML_PATH''${NIXPKGS_QT6_QML_IMPORT_PATH:+:$NIXPKGS_QT6_QML_IMPORT_PATH}"
             # QTermWidget paths for embedding terminal
             export QTERMWIDGET_INCLUDE_PATH="${qtermwidget}/include"
             export QTERMWIDGET_LIB_PATH="${qtermwidget}/lib"
