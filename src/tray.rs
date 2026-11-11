@@ -202,6 +202,37 @@ fn updates_from_json(json: &str) -> Vec<FlakeUpdate> {
     serde_json::from_str(json).unwrap_or_default()
 }
 
+const UPDATE_SCRIPT: &str = "nixos-update-checker-update";
+
+/// The script pkexec runs as root to do the update. A build from a source
+/// checkout uses the checkout's scripts/ folder, wherever the binary was copied
+/// to (devloop runs it from its own state folder); the package installs the
+/// script next to the binary. Otherwise it's looked up on PATH, then in the
+/// system profile. The path is absolute, since pkexec doesn't keep PATH.
+fn update_script_path() -> String {
+    let in_source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join(UPDATE_SCRIPT);
+    let beside_exe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(UPDATE_SCRIPT)));
+    let on_path: Vec<_> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+
+    std::iter::once(in_source)
+        .chain(beside_exe)
+        .chain(
+            on_path
+                .into_iter()
+                .filter(|dir| dir.is_absolute())
+                .map(|dir| dir.join(UPDATE_SCRIPT)),
+        )
+        .find(|script| script.is_file())
+        .map(|script| script.to_string_lossy().into_owned())
+        .unwrap_or_else(|| format!("/run/current-system/sw/bin/{UPDATE_SCRIPT}"))
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -720,17 +751,7 @@ impl qobject::UpdateChecker {
         let prune_mode = GenerationPruneMode::from_str(&generation_prune_mode.to_string());
         let prune_value = generation_prune_value.max(1);
 
-        // Find the script - check dev location first, then installed location
-        let exe_path = std::env::current_exe().unwrap_or_default();
-        let dev_script = exe_path
-            .parent()
-            .map(|p| p.join("../../scripts/nixos-update-checker-update"))
-            .and_then(|p| std::fs::canonicalize(p).ok());
-
-        let script_path = match dev_script {
-            Some(p) => p.to_string_lossy().to_string(),
-            None => "/run/current-system/sw/bin/nixos-update-checker-update".to_string(),
-        };
+        let script_path = update_script_path();
 
         // Forward the user's agent to the root update process so root-owned flakes can push.
         let uid = unsafe { libc::getuid() };
