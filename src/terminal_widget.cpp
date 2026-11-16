@@ -9,6 +9,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QScrollBar>
+#include <QSurfaceFormat>
 #include <QWheelEvent>
 
 TerminalWidget::TerminalWidget(QObject *parent)
@@ -373,4 +374,19 @@ bool TerminalWidget::hasContent() const {
 extern "C" void register_terminal_type() {
     qmlRegisterType<TerminalWidget>("Terminal", 1, 0, "TerminalWidget");
     qDebug() << "TerminalWidget registered with QML";
+}
+
+// Ask for an OpenGL context that reports a GPU reset instead of aborting.
+//
+// When the GPU resets (a hang in any app, or the compositor), Mesa's radeonsi
+// driver aborts every process whose context did not opt in to robustness:
+// "The CS has cancelled because the context is lost. This context is
+// innocent." With ResetNotification the context is created with
+// LOSE_CONTEXT_ON_RESET, so the driver reports the loss and Qt Quick tears
+// down and rebuilds its scene graph instead. Must run before QApplication is
+// constructed so every context, including the global share context, gets it.
+extern "C" void configure_graphics() {
+    QSurfaceFormat format = QSurfaceFormat::defaultFormat();
+    format.setOption(QSurfaceFormat::ResetNotification);
+    QSurfaceFormat::setDefaultFormat(format);
 }

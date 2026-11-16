@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 // Link to the C++ terminal widget registration function
 extern "C" {
+    fn configure_graphics();
     fn register_terminal_type();
 }
 
@@ -68,6 +69,12 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    // Survive GPU resets instead of letting the driver abort us; must come
+    // before the application object exists.
+    unsafe {
+        configure_graphics();
+    }
 
     // Initialize Qt application (QApplication is required for Qt.labs.platform.SystemTrayIcon)
     let mut app = QApplication::new();
