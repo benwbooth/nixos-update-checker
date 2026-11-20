@@ -11,6 +11,7 @@ use std::path::PathBuf;
 // Link to the C++ terminal widget registration function
 extern "C" {
     fn register_terminal_type();
+    fn use_native_text_rendering();
 }
 
 /// Get the path to the lock file
@@ -74,6 +75,7 @@ fn main() {
 
     // Register the terminal widget type with QML before creating the engine
     unsafe {
+        use_native_text_rendering();
         register_terminal_type();
     }
 

@@ -1,5 +1,6 @@
 #include "terminal_widget.h"
 #include <QQmlEngine>
+#include <QQuickWindow>
 #include <QProcess>
 #include <QDebug>
 #include <QCoreApplication>
@@ -373,4 +374,11 @@ bool TerminalWidget::hasContent() const {
 extern "C" void register_terminal_type() {
     qmlRegisterType<TerminalWidget>("Terminal", 1, 0, "TerminalWidget");
     qDebug() << "TerminalWidget registered with QML";
+}
+
+// Native (FreeType) text for every window and Text item, with the desktop's
+// hinting/antialiasing, instead of Qt Quick's distance-field glyphs, which
+// look soft at fractional scales (133%). Call before any window exists.
+extern "C" void use_native_text_rendering() {
+    QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
 }

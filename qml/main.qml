@@ -17,6 +17,8 @@ ApplicationWindow {
     minimumHeight: Math.min(mainContent.implicitHeight + 2 * mainContent.anchors.margins,
                             Screen.desktopAvailableHeight - 40)
     title: "NixOS Update Checker"
+    // Keep text off exact half device pixels at 133% (glyphs smear there).
+    contentItem.transform: Translate { x: 0.001; y: 0.001 }
     flags: Qt.Dialog | Qt.WindowStaysOnTopHint
 
     property bool outputExpanded: false

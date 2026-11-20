@@ -170,6 +170,8 @@ fn main() {
         cc_build.include(&qt_qml_include_path);
         cc_build.include(format!("{}/QtQml", qt_qml_include_path));
         cc_build.include(format!("{}/QtQmlIntegration", qt_qml_include_path));
+        // QQuickWindow::setTextRenderType (native text rendering).
+        cc_build.include(format!("{}/QtQuick", qt_qml_include_path));
     }
 
     cc_build.compile("terminal_widget");
