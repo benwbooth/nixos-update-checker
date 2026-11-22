@@ -50,3 +50,24 @@ plugin, QML fails to import `QtQuick.Controls` at all and no window appears.
 
 - **Do NOT add `icon.source` to ApplicationWindow** - it breaks Qt.labs.platform.SystemTrayIcon (causes tray icon to not appear)
 - SystemTrayIcon initial `icon.source` must be a static qrc path, not a function call like `checker.get_icon_path()` - dynamic updates work via signal handlers
+
+## Menus and the global menu bar
+
+The menus are defined once, as `menuModel` in `qml/main.qml`, and shown in
+two places: the hamburger button in the window and the desktop's global menu
+bar (hearth's top bar, Plasma's Global Menu). Qt Quick's `MenuBar` only goes
+native on macOS (`QQuickMenuBarPrivate::useNativeMenuBar()` returns false
+elsewhere), so `src/global_menu.{h,cpp}` builds the platform theme's menu bar
+directly, as `QMenuBar` does: menus come from `QPlatformMenuBar::createMenu()`
+(the theme's `createPlatformMenu()` returns none under KDE). Under the KDE
+platform theme that is a dbusmenu whose address goes on the window through
+the KDE appmenu protocol; arbor reports it as the window's `app_menu`.
+Check with `arbor msg --json windows` and
+`gdbus call --session --dest <service> --object-path <path> --method com.canonical.dbusmenu.GetLayout -- 0 -1 '[]'`.
+
+## Terminal
+
+The update's terminal (`src/terminal_widget.{h,cpp}`) is a QTermWidget kept
+off screen and painted into the QML scene, with input forwarded to it. Don't
+go back to a native child window (WindowContainer): on Wayland that is a
+subsurface mapped apart from the window's frames, and it flickers.

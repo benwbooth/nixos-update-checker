@@ -126,6 +126,8 @@ fn main() {
     let src_dir = PathBuf::from(&manifest_dir).join("src");
     let header_path = src_dir.join("terminal_widget.h");
     let cpp_path = src_dir.join("terminal_widget.cpp");
+    let menu_header_path = src_dir.join("global_menu.h");
+    let menu_cpp_path = src_dir.join("global_menu.cpp");
 
     // Run MOC on the header file
     let moc_output = out_path.join("moc_terminal_widget.cpp");
@@ -147,12 +149,25 @@ fn main() {
         panic!("moc failed with status: {:?}", moc_status);
     }
 
+    let menu_moc_output = out_path.join("moc_global_menu.cpp");
+    let menu_moc_status = std::process::Command::new(&moc_path)
+        .arg("-I").arg(&qt_include_path)
+        .arg(&menu_header_path)
+        .arg("-o").arg(&menu_moc_output)
+        .status()
+        .expect("Failed to run moc");
+    if !menu_moc_status.success() {
+        panic!("moc failed with status: {:?}", menu_moc_status);
+    }
+
     // Build the terminal widget C++ code including MOC output
     let mut cc_build = cc::Build::new();
     cc_build
         .cpp(true)
         .file(&cpp_path)
         .file(&moc_output)
+        .file(&menu_cpp_path)
+        .file(&menu_moc_output)
         .include(&qtermwidget_include)
         .include(&src_dir)
         .include(&out_dir)
@@ -165,6 +180,14 @@ fn main() {
         cc_build.include(format!("{}/QtGui", qt_include_path));
         cc_build.include(format!("{}/QtWidgets", qt_include_path));
         cc_build.include(format!("{}/QtQml", qt_include_path));
+        // The global menu uses the platform theme's menu bar (QPA, private
+        // headers: src/global_menu.h).
+        if let Some(version) = get_qt_version() {
+            cc_build.include(format!("{}/QtCore/{}", qt_include_path, version));
+            cc_build.include(format!("{}/QtCore/{}/QtCore", qt_include_path, version));
+            cc_build.include(format!("{}/QtGui/{}", qt_include_path, version));
+            cc_build.include(format!("{}/QtGui/{}/QtGui", qt_include_path, version));
+        }
     }
     if !qt_qml_include_path.is_empty() {
         cc_build.include(&qt_qml_include_path);
@@ -183,6 +206,8 @@ fn main() {
     // Tell cargo to rerun if our source files change
     println!("cargo:rerun-if-changed={}", header_path.display());
     println!("cargo:rerun-if-changed={}", cpp_path.display());
+    println!("cargo:rerun-if-changed={}", menu_header_path.display());
+    println!("cargo:rerun-if-changed={}", menu_cpp_path.display());
 
     // Build the main cxx-qt parts
     CxxQtBuilder::new()

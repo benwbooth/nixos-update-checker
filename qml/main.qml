@@ -6,6 +6,7 @@ import QtQuick.Effects
 import Qt.labs.platform as Platform
 import NixosUpdateChecker
 import Terminal 1.0
+import GlobalMenu 1.0
 
 // Software Update, macOS style, in hearth's look: an opaque window with
 // liquid-glass cards and buttons (sheen, rim, soft shadow): a status card
@@ -854,45 +855,109 @@ ApplicationWindow {
     // updates to tick, the selected update's description (or the update's
     // terminal) below it, and Install N Items. macOS colours and glass from
     // hearth's look.
-    menuBar: MenuBar {
-        Menu {
-            title: "Software Update"
-            MenuItem { text: "About Software Update"; enabled: false }
-            MenuSeparator {}
-            MenuItem { text: "Options…"; onTriggered: root.page = 1 }
-            MenuSeparator {}
-            MenuItem { text: "Close Window"; onTriggered: root.hide() }
-            MenuItem { text: "Quit"; onTriggered: checker.quit_app() }
+    // The menus, defined once: exported to the desktop's global menu bar
+    // (GlobalMenuBar: hearth's top bar, Plasma's Global Menu) and shown by
+    // the hamburger button in the window.
+    readonly property var menuModel: [
+        { title: "Software Update", items: [
+            { id: "check", text: checker.checking ? "Checking…" : "Check for Updates",
+              enabled: !checker.checking && !terminal.running },
+            { id: "install", text: root.installLabel(), enabled: root.canInstall },
+            { id: "restart", text: "Restart Now", enabled: root.phase === "restart" },
+            { id: "later", text: "Remind Me Later", enabled: checker.has_updates && !terminal.running, items: [
+                { id: "later-hour", text: "In an Hour" },
+                { id: "later-tonight", text: "Tonight" },
+                { id: "later-tomorrow", text: "Tomorrow" } ] },
+            { separator: true },
+            { id: "options", text: "Options…" },
+            { separator: true },
+            { id: "close", text: "Close Window" },
+            { id: "quit", text: "Quit Software Update" } ] },
+        { title: "Edit", items: [
+            { id: "copy", text: "Copy", enabled: root.outputExpanded },
+            { id: "select-text", text: "Select All Output", enabled: root.outputExpanded },
+            { separator: true },
+            { id: "select-updates", text: "Select All Updates", enabled: root.phase === "available" },
+            { id: "deselect-updates", text: "Deselect All Updates", enabled: root.phase === "available" } ] },
+        { title: "View", items: [
+            { id: "details", text: root.outputExpanded ? "Hide Details" : "Show Details" } ] },
+        { title: "Help", items: [
+            { id: "release-notes", text: "NixOS Release Notes" },
+            { id: "upgrading", text: "Upgrading NixOS" },
+            { id: "flathub", text: "Flathub" } ] }
+    ]
+
+    function menuAction(id) {
+        switch (id) {
+        case "check": checker.check_now(); break
+        case "install": root.startUpdate(false); break
+        case "restart": Qt.callLater(checker.reboot_system); break
+        case "later-hour": checker.snooze("hour"); break
+        case "later-tonight": checker.snooze("tonight"); break
+        case "later-tomorrow": checker.snooze("tomorrow"); break
+        case "options": root.page = 1; root.showWindow(); break
+        case "close": root.hide(); break
+        case "quit": checker.quit_app(); break
+        case "copy": terminal.copySelection(); break
+        case "select-text": terminal.selectAll(); break
+        case "select-updates": root.setAllChecked(true); break
+        case "deselect-updates": root.setAllChecked(false); break
+        case "details": root.outputExpanded = !root.outputExpanded; break
+        case "release-notes": Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/release-notes"); break
+        case "upgrading": Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/#sec-upgrading"); break
+        case "flathub": Qt.openUrlExternally("https://flathub.org"); break
         }
-        Menu {
-            title: "Edit"
-            MenuItem { text: "Copy"; enabled: root.outputExpanded; onTriggered: terminal.copySelection() }
-            MenuItem { text: "Select All"; enabled: root.outputExpanded; onTriggered: terminal.selectAll() }
-            MenuSeparator {}
-            MenuItem { text: "Select All Updates"; enabled: root.phase === "available"; onTriggered: root.setAllChecked(true) }
-            MenuItem { text: "Deselect All Updates"; enabled: root.phase === "available"; onTriggered: root.setAllChecked(false) }
-        }
-        Menu {
-            title: "Tools"
-            MenuItem { text: checker.checking ? "Checking…" : "Check for Updates"; enabled: !checker.checking && !terminal.running; onTriggered: checker.check_now() }
-            MenuItem { text: root.installLabel(); enabled: root.canInstall; onTriggered: root.startUpdate(false) }
-            MenuSeparator {}
-            Menu {
-                title: "Remind Me Later"
-                enabled: checker.has_updates && !terminal.running
-                MenuItem { text: "In an Hour"; onTriggered: checker.snooze("hour") }
-                MenuItem { text: "Tonight"; onTriggered: checker.snooze("tonight") }
-                MenuItem { text: "Tomorrow"; onTriggered: checker.snooze("tomorrow") }
+    }
+
+    GlobalMenuBar {
+        id: globalMenu
+        window: root
+        model: root.menuModel
+        onTriggered: function(id) { root.menuAction(id) }
+    }
+    // The menu's address goes on the window's surface, which exists only
+    // while the window is shown.
+    onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
+
+    // The hamburger's menu: the same model, flattened (one group per menu,
+    // submenus kept), rebuilt each time it opens so it shows the current
+    // texts and states.
+    Menu { id: hamburgerMenu }
+    Component { id: hamburgerItem; MenuItem { property string actionId; onTriggered: root.menuAction(actionId) } }
+    Component { id: hamburgerSeparator; MenuSeparator {} }
+    Component { id: hamburgerSubmenu; Menu {} }
+    property var hamburgerObjects: []
+    function fillMenu(menu, items) {
+        for (var i = 0; i < items.length; i++) {
+            var it = items[i]
+            var obj
+            if (it.separator) {
+                obj = hamburgerSeparator.createObject(null)
+                menu.addItem(obj)
+            } else if (it.items) {
+                obj = hamburgerSubmenu.createObject(null, { title: it.text, enabled: it.enabled !== false })
+                fillMenu(obj, it.items)
+                menu.addMenu(obj)
+            } else {
+                obj = hamburgerItem.createObject(null, { text: it.text, actionId: it.id, enabled: it.enabled !== false })
+                menu.addItem(obj)
             }
-            MenuSeparator {}
-            MenuItem { text: root.outputExpanded ? "Hide Details" : "Show Details"; onTriggered: root.outputExpanded = !root.outputExpanded }
+            hamburgerObjects.push(obj)
         }
-        Menu {
-            title: "Help"
-            MenuItem { text: "NixOS Release Notes"; onTriggered: Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/release-notes") }
-            MenuItem { text: "NixOS Manual: Upgrading"; onTriggered: Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/#sec-upgrading") }
-            MenuItem { text: "Flathub"; onTriggered: Qt.openUrlExternally("https://flathub.org") }
+    }
+    function openHamburger(button) {
+        while (hamburgerMenu.count > 0) hamburgerMenu.takeItem(0)
+        for (var i = 0; i < hamburgerObjects.length; i++) hamburgerObjects[i].destroy()
+        hamburgerObjects = []
+        for (var m = 0; m < menuModel.length; m++) {
+            if (m > 0) {
+                var sep = hamburgerSeparator.createObject(null)
+                hamburgerMenu.addItem(sep)
+                hamburgerObjects.push(sep)
+            }
+            fillMenu(hamburgerMenu, menuModel[m].items)
         }
+        hamburgerMenu.popup(button, button.width - hamburgerMenu.implicitWidth, button.height + 4)
     }
 
     background: Rectangle {
@@ -1114,6 +1179,32 @@ ApplicationWindow {
                                     GradientStop { position: 0.6; color: Qt.rgba(1, 1, 1, 0) }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // The menus (also in the desktop's global menu bar).
+                MouseArea {
+                    id: hamburger
+                    Layout.alignment: Qt.AlignTop
+                    implicitWidth: 32
+                    implicitHeight: 32
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openHamburger(hamburger)
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: height / 2
+                        color: hamburger.pressed || hamburgerMenu.visible ? theme.controlHover
+                             : hamburger.containsMouse ? theme.control : "transparent"
+                        border.color: hamburger.containsMouse || hamburgerMenu.visible ? theme.rim : "transparent"
+                    }
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 3
+                        Repeater {
+                            model: 3
+                            Rectangle { width: 14; height: 1.6; radius: 0.8; color: theme.fg }
                         }
                     }
                 }

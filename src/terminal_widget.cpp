@@ -1,4 +1,5 @@
 #include "terminal_widget.h"
+#include "global_menu.h"
 #include <QQmlEngine>
 #include <QQuickWindow>
 #include <QProcess>
@@ -421,6 +422,7 @@ bool TerminalWidget::hasContent() const {
 // Register the type with QML - use C linkage so Rust can call it
 extern "C" void register_terminal_type() {
     qmlRegisterType<TerminalWidget>("Terminal", 1, 0, "TerminalWidget");
+    qmlRegisterType<GlobalMenuBar>("GlobalMenu", 1, 0, "GlobalMenuBar");
     qDebug() << "TerminalWidget registered with QML";
 }
 
