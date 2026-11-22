@@ -16,13 +16,13 @@ import Terminal 1.0
 ApplicationWindow {
     id: root
     visible: false  // Start hidden - show via tray menu or the notification
+    // A fixed size that never follows the content: a resize is a round trip
+    // to the compositor, so it would show the new layout in the old size for
+    // a frame. Long lists scroll; details swap with them in the same space.
     width: 700
-    height: 560
+    height: 660
     minimumWidth: 600
-    // Grow with the content (expanded lists, the terminal) instead of
-    // squeezing it; the sheet scrolls, so it doesn't count.
-    minimumHeight: Math.min(page === 0 ? updatePage.implicitHeight + 44 : 420,
-                            Screen.desktopAvailableHeight - 40)
+    minimumHeight: 540
     title: "Software Update"
     // Keep text off exact half device pixels at 133% (glyphs smear there).
     contentItem.transform: Translate { x: 0.001; y: 0.001 }
@@ -36,9 +36,7 @@ ApplicationWindow {
     property string lastLine: ""  // Last non-empty line from terminal output
     property string rebootPackages: ""
     property int page: 0  // 0 = Software Update, 1 = Automatic Updates sheet
-    onOutputExpandedChanged: Qt.callLater(function() {
-        height = outputExpanded ? Math.max(height, minimumHeight + 280) : Math.max(minimumHeight, 560)
-    })
+    onOutputExpandedChanged: if (outputExpanded) terminal.focusTerminal()
 
     // --- look (hearth's Theme, from the system palette) ---
     QtObject {
@@ -708,7 +706,6 @@ ApplicationWindow {
 
                 checker.update_status_line = exitCode === 0 ? "Update completed successfully" : "Update failed with exit code " + exitCode
                 progressInfo.complete(exitCode === 0)
-                terminal.show()
 
                 // Check for reboot-requiring packages before clearing
                 var needsReboot = exitCode === 0 && checker.check_reboot_required()
@@ -1074,215 +1071,229 @@ ApplicationWindow {
                 }
             }
 
-            // A new major release: flake updates stay on the release the
-            // flake follows, so moving on takes an edit to flake.nix.
-            GlassCard {
-                visible: checker.new_release !== "" && !root.outputExpanded
-                padding: 14
-                RowLayout {
-                    width: parent.width
-                    spacing: 12
-                    Rectangle {
-                        implicitWidth: 34
-                        implicitHeight: 34
-                        radius: 9
-                        gradient: Gradient {
-                            GradientStop { position: 0; color: "#ffb340" }
-                            GradientStop { position: 1; color: "#f08a00" }
-                        }
-                        border.color: Qt.rgba(1, 1, 1, 0.25)
-                        Text_ {
-                            anchors.centerIn: parent
-                            text: "!"
-                            color: "#ffffff"
-                            font.weight: Font.Bold
-                            font.pointSize: 13
-                        }
-                    }
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 1
-                        Text_ {
-                            Layout.fillWidth: true
-                            text: "NixOS " + checker.new_release + " is available"
-                            font.weight: Font.DemiBold
-                        }
-                        Text_ {
-                            Layout.fillWidth: true
-                            color: theme.fgDim
-                            font.pointSize: theme.smallSize
-                            wrapMode: Text.Wrap
-                            elide: Text.ElideNone
-                            text: "Your flake follows " + (checker.followed_release ? "NixOS " + checker.followed_release : "an older release")
-                                + ", which updates won’t move past. To upgrade, change the nixpkgs input (and any release-pinned inputs) in flake.nix."
-                        }
-                    }
-                    GlassButton {
-                        text: "Release Notes"
-                        onClicked: Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/release-notes")
-                    }
-                }
-            }
-
-            // The terminal (a native child window, so it lives outside any
-            // scroll area and above nothing that pops up).
-            Rectangle {
+            // Below the status card: the update lists (scrolling when long)
+            // or the update's terminal, in the same space, swapped in one frame.
+            ScrollView {
+                id: listsScroll
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.minimumHeight: 160
-                visible: root.outputExpanded
-                radius: 12
-                color: "#1e1e1e"
-                border.color: theme.edge
-                WindowContainer {
-                    id: terminalContainer
-                    anchors.fill: parent
-                    anchors.margins: 8
-                    window: terminal.window
-                    visible: root.outputExpanded && root.page === 0
-                    focus: true
-                    activeFocusOnTab: true
-                    onVisibleChanged: if (visible) Qt.callLater(terminal.focusTerminal)
-                    onActiveFocusChanged: if (activeFocus) terminal.focusTerminal()
-                }
-            }
-
-            // Pending updates
-            GlassCard {
-                id: updatesCard
-                visible: !root.outputExpanded && checker.has_updates && root.phase !== "installing"
-                padding: 14
+                // Room for the cards' shadows at the sides.
+                Layout.leftMargin: -22
+                Layout.rightMargin: -22
+                visible: !root.outputExpanded
+                contentWidth: availableWidth
+                clip: true
                 ColumnLayout {
-                    width: parent.width
-                    spacing: 10
+                    x: 22
+                    width: listsScroll.availableWidth - 44
+                    spacing: 14
 
-                    // NixOS
-                    RowLayout {
-                        Layout.fillWidth: true
-                        visible: checker.update_count > 0
-                        spacing: 12
-                        IconTile { source: "qrc:/icons/nix-flake.svg" }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 1
-                            Text_ { text: "NixOS"; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                            Text_ {
+                    // A new major release: flake updates stay on the release the
+                    // flake follows, so moving on takes an edit to flake.nix.
+                    GlassCard {
+                        visible: checker.new_release !== "" && !root.outputExpanded
+                        padding: 14
+                        RowLayout {
+                            width: parent.width
+                            spacing: 12
+                            Rectangle {
+                                implicitWidth: 34
+                                implicitHeight: 34
+                                radius: 9
+                                gradient: Gradient {
+                                    GradientStop { position: 0; color: "#ffb340" }
+                                    GradientStop { position: 1; color: "#f08a00" }
+                                }
+                                border.color: Qt.rgba(1, 1, 1, 0.25)
+                                Text_ {
+                                    anchors.centerIn: parent
+                                    text: "!"
+                                    color: "#ffffff"
+                                    font.weight: Font.Bold
+                                    font.pointSize: 13
+                                }
+                            }
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                color: theme.fgDim
-                                font.pointSize: theme.smallSize
-                                text: checker.update_count + (checker.update_count === 1 ? " package" : " packages")
-                                    + (root.sizeText() ? " · " + root.sizeText() : "")
+                                spacing: 1
+                                Text_ {
+                                    Layout.fillWidth: true
+                                    text: "NixOS " + checker.new_release + " is available"
+                                    font.weight: Font.DemiBold
+                                }
+                                Text_ {
+                                    Layout.fillWidth: true
+                                    color: theme.fgDim
+                                    font.pointSize: theme.smallSize
+                                    wrapMode: Text.Wrap
+                                    elide: Text.ElideNone
+                                    text: "Your flake follows " + (checker.followed_release ? "NixOS " + checker.followed_release : "an older release")
+                                        + ", which updates won’t move past. To upgrade, change the nixpkgs input (and any release-pinned inputs) in flake.nix."
+                                }
+                            }
+                            GlassButton {
+                                text: "Release Notes"
+                                onClicked: Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/release-notes")
                             }
                         }
-                        LinkButton {
-                            text: root.nixListExpanded ? "Less Info" : "More Info…"
-                            onClicked: root.nixListExpanded = !root.nixListExpanded
-                        }
-                    }
-                    ListView {
-                        id: nixList
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 46
-                        visible: root.nixListExpanded && checker.update_count > 0
-                        implicitHeight: Math.min(contentHeight, 180)
-                        clip: true
-                        boundsBehavior: Flickable.StopAtBounds
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                        model: {
-                            try { return checker.updates_json ? JSON.parse(checker.updates_json) : [] }
-                            catch (e) { return [] }
-                        }
-                        delegate: UpdateRow {
-                            width: nixList.width - 12
-                            readonly property var info: root.nixVersions(modelData)
-                            name: info.name
-                            from: info.from
-                            to: info.to
-                            tag: info.isNew ? "new" : info.rebuilt ? "rebuilt" : ""
-                        }
                     }
 
-                    Separator {
-                        visible: checker.update_count > 0 && checker.include_flatpak && checker.flatpak_count > 0
-                    }
-
-                    // Flatpak
-                    RowLayout {
-                        Layout.fillWidth: true
-                        visible: checker.include_flatpak && checker.flatpak_count > 0
-                        spacing: 12
-                        IconTile { flatpakGlyph: true }
+                    // Pending updates
+                    GlassCard {
+                        id: updatesCard
+                        visible: !root.outputExpanded && checker.has_updates && root.phase !== "installing"
+                        padding: 14
                         ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 1
-                            Text_ { text: "Flatpak Apps"; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                            Text_ {
+                            width: parent.width
+                            spacing: 10
+
+                            // NixOS
+                            RowLayout {
                                 Layout.fillWidth: true
-                                color: theme.fgDim
-                                font.pointSize: theme.smallSize
-                                text: {
-                                    var list = flatpakList.model
-                                    var apps = 0, sys = 0, user = 0
-                                    for (var i = 0; i < list.length; i++) {
-                                        if (list[i].kind === "app") apps++
-                                        if (list[i].installation === "system") sys++; else user++
+                                visible: checker.update_count > 0
+                                spacing: 12
+                                IconTile { source: "qrc:/icons/nix-flake.svg" }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 1
+                                    Text_ { text: "NixOS"; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                                    Text_ {
+                                        Layout.fillWidth: true
+                                        color: theme.fgDim
+                                        font.pointSize: theme.smallSize
+                                        text: checker.update_count + (checker.update_count === 1 ? " package" : " packages")
+                                            + (root.sizeText() ? " · " + root.sizeText() : "")
                                     }
-                                    var s = checker.flatpak_count + (checker.flatpak_count === 1 ? " update" : " updates")
-                                    if (apps !== list.length) s += " (" + apps + (apps === 1 ? " app, " : " apps, ") + (list.length - apps) + " runtime" + (list.length - apps === 1 ? ")" : "s)")
-                                    if (sys && user) s += " · system and user"
-                                    else if (user) s += " · your apps"
-                                    return s
+                                }
+                                LinkButton {
+                                    text: root.nixListExpanded ? "Less Info" : "More Info…"
+                                    onClicked: root.nixListExpanded = !root.nixListExpanded
+                                }
+                            }
+                            ListView {
+                                id: nixList
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 46
+                                visible: root.nixListExpanded && checker.update_count > 0
+                                implicitHeight: Math.min(contentHeight, 180)
+                                clip: true
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                                model: {
+                                    try { return checker.updates_json ? JSON.parse(checker.updates_json) : [] }
+                                    catch (e) { return [] }
+                                }
+                                delegate: UpdateRow {
+                                    width: nixList.width - 12
+                                    readonly property var info: root.nixVersions(modelData)
+                                    name: info.name
+                                    from: info.from
+                                    to: info.to
+                                    tag: info.isNew ? "new" : info.rebuilt ? "rebuilt" : ""
+                                }
+                            }
+
+                            Separator {
+                                visible: checker.update_count > 0 && checker.include_flatpak && checker.flatpak_count > 0
+                            }
+
+                            // Flatpak
+                            RowLayout {
+                                Layout.fillWidth: true
+                                visible: checker.include_flatpak && checker.flatpak_count > 0
+                                spacing: 12
+                                IconTile { flatpakGlyph: true }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 1
+                                    Text_ { text: "Flatpak Apps"; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                                    Text_ {
+                                        Layout.fillWidth: true
+                                        color: theme.fgDim
+                                        font.pointSize: theme.smallSize
+                                        text: {
+                                            var list = flatpakList.model
+                                            var apps = 0, sys = 0, user = 0
+                                            for (var i = 0; i < list.length; i++) {
+                                                if (list[i].kind === "app") apps++
+                                                if (list[i].installation === "system") sys++; else user++
+                                            }
+                                            var s = checker.flatpak_count + (checker.flatpak_count === 1 ? " update" : " updates")
+                                            if (apps !== list.length) s += " (" + apps + (apps === 1 ? " app, " : " apps, ") + (list.length - apps) + " runtime" + (list.length - apps === 1 ? ")" : "s)")
+                                            if (sys && user) s += " · system and user"
+                                            else if (user) s += " · your apps"
+                                            return s
+                                        }
+                                    }
+                                }
+                                LinkButton {
+                                    text: root.flatpakListExpanded ? "Less Info" : "More Info…"
+                                    onClicked: root.flatpakListExpanded = !root.flatpakListExpanded
+                                }
+                            }
+                            ListView {
+                                id: flatpakList
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 46
+                                visible: root.flatpakListExpanded && checker.include_flatpak && checker.flatpak_count > 0
+                                implicitHeight: Math.min(contentHeight, 180)
+                                clip: true
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                                model: {
+                                    try { return checker.flatpak_updates_json ? JSON.parse(checker.flatpak_updates_json) : [] }
+                                    catch (e) { return [] }
+                                }
+                                delegate: UpdateRow {
+                                    width: flatpakList.width - 12
+                                    name: modelData.name
+                                    from: modelData.old_version !== modelData.new_version ? modelData.old_version : ""
+                                    to: modelData.new_version || modelData.branch
+                                    tag: modelData.installation === "user" ? "user" : modelData.kind === "runtime" ? "runtime" : ""
                                 }
                             }
                         }
-                        LinkButton {
-                            text: root.flatpakListExpanded ? "Less Info" : "More Info…"
-                            onClicked: root.flatpakListExpanded = !root.flatpakListExpanded
+                    }
+
+                    // Automatic updates summary, opens the sheet
+                    GlassCard {
+                        visible: !root.outputExpanded
+                        padding: 6
+                        SettingRow {
+                            width: parent.width - 24
+                            x: 12
+                            label: "Automatic updates"
+                            note: "Check " + root.intervalText()
+                                + (checker.notify_updates ? ", notify me" : "")
+                                + (checker.include_flatpak ? ", include Flatpak apps" : "")
+                            GlassButton {
+                                text: "Options…"
+                                onClicked: root.page = 1
+                            }
                         }
                     }
-                    ListView {
-                        id: flatpakList
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 46
-                        visible: root.flatpakListExpanded && checker.include_flatpak && checker.flatpak_count > 0
-                        implicitHeight: Math.min(contentHeight, 180)
-                        clip: true
-                        boundsBehavior: Flickable.StopAtBounds
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                        model: {
-                            try { return checker.flatpak_updates_json ? JSON.parse(checker.flatpak_updates_json) : [] }
-                            catch (e) { return [] }
-                        }
-                        delegate: UpdateRow {
-                            width: flatpakList.width - 12
-                            name: modelData.name
-                            from: modelData.old_version !== modelData.new_version ? modelData.old_version : ""
-                            to: modelData.new_version || modelData.branch
-                            tag: modelData.installation === "user" ? "user" : modelData.kind === "runtime" ? "runtime" : ""
-                        }
-                    }
+
+                    Item { implicitHeight: 8 }
                 }
             }
 
-            // Automatic updates summary, opens the sheet
-            GlassCard {
-                visible: !root.outputExpanded
-                padding: 6
-                SettingRow {
-                    width: parent.width - 24
-                    x: 12
-                    label: "Automatic updates"
-                    note: "Check " + root.intervalText()
-                        + (checker.notify_updates ? ", notify me" : "")
-                        + (checker.include_flatpak ? ", include Flatpak apps" : "")
-                    GlassButton {
-                        text: "Options…"
-                        onClicked: root.page = 1
-                    }
+            // The update's terminal (drawn in the scene: see terminal_widget.h).
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: root.outputExpanded
+                radius: 12
+                color: "#000000"
+                border.color: theme.edge
+                clip: true
+                TerminalWidget {
+                    id: terminal
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    onRunningChanged: checker.update_running = terminal.running
                 }
             }
 
-            Item { Layout.fillHeight: true; visible: !root.outputExpanded }
 
             RowLayout {
                 Layout.fillWidth: true
@@ -1495,13 +1506,9 @@ ApplicationWindow {
         }
     }
 
-    TerminalWidget {
-        id: terminal
-        onRunningChanged: checker.update_running = terminal.running
-    }
-
     // `--show` opens the window at start (`--show=options` the sheet;
-    // `--expand` opens both update lists, for screenshots).
+    // `--expand` opens both update lists and `--demo-details` shows the
+    // terminal with a harmless command's output, for screenshots).
     Component.onCompleted: {
         var args = Qt.application.arguments
         for (var i = 0; i < args.length; i++) {
@@ -1510,6 +1517,11 @@ ApplicationWindow {
                 showWindow()
             }
             if (args[i] === "--expand") nixListExpanded = flatpakListExpanded = true
+            // Screenshots of the details view: a harmless command's output.
+            if (args[i] === "--demo-details") {
+                outputExpanded = true
+                terminal.runCommand("printf '\\033[1;36mSoftware Update\\033[0m\\n'; ls --color=always /; printf 'Type here: '; read -r x; echo \"you typed: $x\"; echo Update complete!")
+            }
         }
     }
 

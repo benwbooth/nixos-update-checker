@@ -11,18 +11,144 @@
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QWheelEvent>
+#include <QCursor>
+#include <QPainter>
+#include <QFocusEvent>
 
-TerminalWidget::TerminalWidget(QObject *parent)
-    : QObject(parent)
+TerminalWidget::TerminalWidget(QQuickItem *parent)
+    : QQuickPaintedItem(parent)
     , m_terminal(nullptr)
     , m_running(false)
 {
-    // Watch application-wide so keys delivered to the QML window can be
-    // routed to the terminal (see m_keyboardCaptured).
+    // Application-wide: sees the terminal's own events (shortcuts, drag
+    // scrolling, wheel) and its repaint requests.
     qApp->installEventFilter(this);
+    setAcceptedMouseButtons(Qt::AllButtons);
+    setFlag(ItemIsFocusScope, false);
+    setFlag(ItemAcceptsInputMethod, true);
+    setCursor(Qt::IBeamCursor);
+    setOpaquePainting(true);
+    setFillColor(QColor("#000000"));
     m_dragScrollTimer.setInterval(50);
     connect(&m_dragScrollTimer, &QTimer::timeout, this, &TerminalWidget::dragScrollTick);
+    m_repaintTimer.setSingleShot(true);
+    m_repaintTimer.setInterval(8);
+    connect(&m_repaintTimer, &QTimer::timeout, this, [this] { update(); });
+    m_refreshTimer.setInterval(100);
+    connect(&m_refreshTimer, &QTimer::timeout, this, [this] { update(); });
     setupTerminal();
+}
+
+void TerminalWidget::scheduleRepaint() {
+    if (isVisible() && !m_repaintTimer.isActive()) m_repaintTimer.start();
+}
+
+bool TerminalWidget::isTerminalWidget(QObject *object) const {
+    for (QObject *o = object; o; o = o->parent()) {
+        if (o == m_terminal) return true;
+    }
+    return false;
+}
+
+void TerminalWidget::paint(QPainter *painter) {
+    if (!m_terminal) return;
+    m_terminal->render(painter, QPoint(), QRegion(),
+                       QWidget::DrawWindowBackground | QWidget::DrawChildren);
+}
+
+void TerminalWidget::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) {
+    QQuickPaintedItem::geometryChange(newGeometry, oldGeometry);
+    if (m_terminal && newGeometry.size() != oldGeometry.size() && !newGeometry.isEmpty()) {
+        m_terminal->resize(newGeometry.size().toSize());
+        update();
+    }
+}
+
+void TerminalWidget::itemChange(ItemChange change, const ItemChangeData &value) {
+    QQuickPaintedItem::itemChange(change, value);
+    if (change == ItemVisibleHasChanged) {
+        if (value.boolValue) {
+            m_refreshTimer.start();
+            update();
+        } else {
+            m_refreshTimer.stop();
+        }
+    }
+}
+
+void TerminalWidget::forwardMouse(QMouseEvent *event) {
+    if (!m_terminal) return;
+    const QPointF pos = event->position();
+    QWidget *target = m_mouseTarget;
+    if (!target || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick) {
+        target = m_terminal->childAt(pos.toPoint());
+        if (!target) target = m_terminal;
+        if (event->type() == QEvent::MouseButtonPress) m_mouseTarget = target;
+    }
+    const QPointF local = target->mapFrom(m_terminal, pos);
+    QMouseEvent copy(event->type(), local, local, mapToGlobal(pos), event->button(),
+                     event->buttons(), event->modifiers());
+    QCoreApplication::sendEvent(target, &copy);
+    if (event->type() == QEvent::MouseButtonRelease && event->buttons() == Qt::NoButton) {
+        m_mouseTarget = nullptr;
+    }
+    event->accept();
+    scheduleRepaint();
+}
+
+void TerminalWidget::mousePressEvent(QMouseEvent *event) {
+    forceActiveFocus(Qt::MouseFocusReason);
+    forwardMouse(event);
+}
+
+void TerminalWidget::mouseMoveEvent(QMouseEvent *event) { forwardMouse(event); }
+void TerminalWidget::mouseReleaseEvent(QMouseEvent *event) { forwardMouse(event); }
+void TerminalWidget::mouseDoubleClickEvent(QMouseEvent *event) { forwardMouse(event); }
+
+void TerminalWidget::wheelEvent(QWheelEvent *event) {
+    if (!m_terminal) return;
+    const QPointF pos = event->position();
+    QWidget *target = m_terminal->childAt(pos.toPoint());
+    if (!target) target = m_terminal;
+    const QPointF local = target->mapFrom(m_terminal, pos);
+    QWheelEvent copy(local, mapToGlobal(pos), event->pixelDelta(), event->angleDelta(),
+                     event->buttons(), event->modifiers(), event->phase(), event->inverted());
+    QCoreApplication::sendEvent(target, &copy);
+    event->accept();
+    scheduleRepaint();
+}
+
+void TerminalWidget::forwardKey(QKeyEvent *event) {
+    if (!m_display) return;
+    // Sent through the application's event filters, so eventFilter() still
+    // turns Ctrl+Shift+C/V/A into copy, paste and select all.
+    QKeyEvent copy(event->type(), event->key(), event->modifiers(), event->nativeScanCode(),
+                   event->nativeVirtualKey(), event->nativeModifiers(), event->text(),
+                   event->isAutoRepeat(), event->count());
+    QCoreApplication::sendEvent(m_display, &copy);
+    event->accept();
+    scheduleRepaint();
+}
+
+void TerminalWidget::keyPressEvent(QKeyEvent *event) { forwardKey(event); }
+void TerminalWidget::keyReleaseEvent(QKeyEvent *event) { forwardKey(event); }
+
+void TerminalWidget::focusInEvent(QFocusEvent *event) {
+    QQuickPaintedItem::focusInEvent(event);
+    if (m_display) {
+        QFocusEvent in(QEvent::FocusIn, event->reason());
+        QCoreApplication::sendEvent(m_display, &in);
+    }
+    scheduleRepaint();
+}
+
+void TerminalWidget::focusOutEvent(QFocusEvent *event) {
+    QQuickPaintedItem::focusOutEvent(event);
+    if (m_display) {
+        QFocusEvent out(QEvent::FocusOut, event->reason());
+        QCoreApplication::sendEvent(m_display, &out);
+    }
+    scheduleRepaint();
 }
 
 void TerminalWidget::setupTerminal() {
@@ -61,12 +187,19 @@ void TerminalWidget::setupTerminal() {
     env << "TERM=xterm-256color";
     m_terminal->setEnvironment(env);
 
-    // Force native window creation
-    m_terminal->setAttribute(Qt::WA_NativeWindow);
-    m_terminal->winId();
-
-    // Notify QML that the window handle changed
-    QMetaObject::invokeMethod(this, "windowReady", Qt::QueuedConnection);
+    m_terminal->setBlinkingCursor(false);
+    // Laid out and painted as if shown, but never on screen: this item
+    // draws it (see the class comment).
+    m_terminal->setAttribute(Qt::WA_DontShowOnScreen);
+    if (width() > 0 && height() > 0) {
+        m_terminal->resize(size().toSize());
+    } else {
+        m_terminal->resize(800, 400);
+    }
+    m_terminal->show();
+    connect(m_terminal, &QTermWidget::receivedData, this, &TerminalWidget::scheduleRepaint);
+    m_mouseTarget = nullptr;
+    update();
 }
 
 TerminalWidget::~TerminalWidget() {
@@ -75,13 +208,6 @@ TerminalWidget::~TerminalWidget() {
         delete m_terminal;
         m_terminal = nullptr;
     }
-}
-
-QWindow* TerminalWidget::window() const {
-    if (m_terminal) {
-        return m_terminal->windowHandle();
-    }
-    return nullptr;
 }
 
 void TerminalWidget::setRunning(bool running) {
@@ -110,6 +236,7 @@ void TerminalWidget::runCommand(const QString &command) {
     m_terminal->setArgs({"-c", command});
     m_terminal->startShellProgram();
     QMetaObject::invokeMethod(this, "focusTerminal", Qt::QueuedConnection);
+    update();
 }
 
 QString TerminalWidget::getAllText() {
@@ -201,53 +328,15 @@ void TerminalWidget::dragScrollTick() {
     QMouseEvent move(QEvent::MouseMove, m_dragPos, m_display->mapToGlobal(m_dragPos),
                      Qt::NoButton, Qt::LeftButton, QGuiApplication::keyboardModifiers());
     QCoreApplication::sendEvent(m_display, &move);
-}
-
-bool TerminalWidget::forwardKeyboard(QObject *watched, QEvent *event) {
-    if (!m_terminal || !m_display || !watched->isWindowType()) {
-        return false;
-    }
-    // Events already delivered to the terminal's own window (X11, or a
-    // compositor that does focus subsurfaces) need no help.
-    QWindow *terminalWindow = m_terminal->windowHandle();
-    if (watched == terminalWindow) {
-        return false;
-    }
-
-    switch (event->type()) {
-    case QEvent::MouseButtonPress:
-        // Clicking anywhere else in the app window hands the keyboard back.
-        m_keyboardCaptured = false;
-        return false;
-    case QEvent::KeyPress:
-    case QEvent::KeyRelease:
-        break;
-    default:
-        return false;
-    }
-
-    if (!m_keyboardCaptured || !m_terminal->isVisible()) {
-        return false;
-    }
-    // Only keys aimed at the window that hosts the terminal.
-    if (terminalWindow && terminalWindow->parent() && watched != terminalWindow->parent()) {
-        return false;
-    }
-
-    auto *key = static_cast<QKeyEvent *>(event);
-    QKeyEvent copy(key->type(), key->key(), key->modifiers(), key->nativeScanCode(),
-                   key->nativeVirtualKey(), key->nativeModifiers(), key->text(),
-                   key->isAutoRepeat(), key->count());
-    QCoreApplication::sendEvent(m_display, &copy);
-    return true;
+    scheduleRepaint();
 }
 
 bool TerminalWidget::eventFilter(QObject *watched, QEvent *event) {
-    if (watched != m_display && forwardKeyboard(watched, event)) {
-        return true;
-    }
-    if (watched == m_display && event->type() == QEvent::MouseButtonPress) {
-        m_keyboardCaptured = true;
+    // The off-screen terminal asks to be repainted (cursor, selection,
+    // scrolling): draw this item again.
+    if ((event->type() == QEvent::UpdateRequest || event->type() == QEvent::UpdateLater
+         || event->type() == QEvent::Paint) && isTerminalWidget(watched)) {
+        scheduleRepaint();
     }
     if (watched != m_display) {
         return QObject::eventFilter(watched, event);
@@ -303,7 +392,9 @@ void TerminalWidget::showContextMenu(const QPoint &pos) {
     menu.addSeparator();
     QAction *hint = menu.addAction(tr("Tip: Ctrl+Alt+drag for block selection"));
     hint->setEnabled(false);
-    menu.exec(m_terminal->mapToGlobal(pos));
+    Q_UNUSED(pos);
+    // The terminal is off screen: open the menu at the pointer.
+    menu.exec(QCursor::pos());
 }
 
 void TerminalWidget::clear() {
@@ -312,52 +403,9 @@ void TerminalWidget::clear() {
     }
 }
 
-void TerminalWidget::show() {
-    if (m_terminal) {
-        m_terminal->show();
-    }
-}
-
-void TerminalWidget::hide() {
-    if (m_terminal) {
-        m_terminal->hide();
-    }
-}
-
 void TerminalWidget::focusTerminal() {
-    if (!m_terminal) {
-        return;
-    }
-    m_keyboardCaptured = true;
-
-    // Activate the native window so the compositor delivers key events here.
-    m_terminal->activateWindow();
-    if (m_terminal->windowHandle()) {
-        m_terminal->windowHandle()->requestActivate();
-    }
-
-    // QTermWidget delegates keyboard input to an internal TerminalDisplay child
-    // widget. When the terminal is embedded as a foreign window via QML
-    // WindowContainer, focusing the outer QTermWidget is not always enough to
-    // route keystrokes to that inner widget, so focus it directly. Prefer the
-    // focus proxy (set by QTermWidget to its display), then fall back to
-    // locating the TerminalDisplay child by class name.
-    QWidget *inner = m_terminal->focusProxy();
-    if (!inner) {
-        const QList<QWidget *> children = m_terminal->findChildren<QWidget *>();
-        for (QWidget *child : children) {
-            if (qstrcmp(child->metaObject()->className(), "TerminalDisplay") == 0) {
-                inner = child;
-                break;
-            }
-        }
-    }
-
-    if (inner) {
-        inner->setFocus(Qt::OtherFocusReason);
-    } else {
-        m_terminal->setFocus(Qt::OtherFocusReason);
-    }
+    if (!m_terminal) return;
+    forceActiveFocus(Qt::OtherFocusReason);
 }
 
 void TerminalWidget::log(const QString &msg) {
