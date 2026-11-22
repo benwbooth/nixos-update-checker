@@ -131,9 +131,10 @@ pub mod qobject {
         fn get_update_exit_code(self: &UpdateChecker, text: QString) -> i32;
 
         /// Build the full pkexec update command string from the current
-        /// updates and settings
+        /// updates and settings. `selection` is JSON
+        /// {"system": bool, "flatpaks": [full refs]}; "" installs everything.
         #[qinvokable]
-        fn build_update_command(self: &UpdateChecker) -> QString;
+        fn build_update_command(self: &UpdateChecker, selection: QString) -> QString;
 
         /// Post the "Updates Available" notification if it's due (new
         /// updates, or a Later has run out). Call after checks and once a minute.
@@ -957,18 +958,38 @@ impl qobject::UpdateChecker {
     }
 
     /// Build the full pkexec update command string from the current updates and settings
-    pub fn build_update_command(&self) -> QString {
+    pub fn build_update_command(&self, selection: QString) -> QString {
         let flake = self.flake_path().to_string();
         let nix_updates = updates_from_json(&self.updates_json().to_string());
         let msg = flake_checker::generate_commit_message(&nix_updates);
-        let flatpaks = if *self.include_flatpak() {
+        let mut flatpaks = if *self.include_flatpak() {
             flatpaks_from_json(&self.flatpak_updates_json().to_string())
         } else {
             Vec::new()
         };
         // Only the parts with something to do. With nothing known (no check
         // yet), do the system, as before.
-        let update_system = !nix_updates.is_empty() || flatpaks.is_empty();
+        let mut update_system = !nix_updates.is_empty() || flatpaks.is_empty();
+        // The items picked in the list (everything when there's no selection,
+        // e.g. Install Now in the notification).
+        let selection = selection.to_string();
+        if let Ok(sel) = serde_json::from_str::<serde_json::Value>(&selection) {
+            update_system &= sel.get("system").and_then(|v| v.as_bool()).unwrap_or(true);
+            let picked: Vec<String> = sel
+                .get("flatpaks")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|r| r.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            flatpaks.retain(|f| picked.contains(&f.full_ref));
+        }
+        let refs = |installation: &str| {
+            flatpaks
+                .iter()
+                .filter(|f| f.installation == installation && !f.full_ref.is_empty())
+                .map(|f| f.full_ref.clone())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         let prune_mode = GenerationPruneMode::from_str(&self.generation_prune_mode().to_string());
         let prune_value = (*self.generation_prune_value()).max(1);
         let flag = |on: bool| shell_quote(if on { "1" } else { "0" });
@@ -980,7 +1001,7 @@ impl qobject::UpdateChecker {
         let ssh_auth_sock = current_ssh_auth_sock(uid);
 
         let cmd = format!(
-            "pkexec env FLAKE_PATH={} COMMIT_MSG={} SSH_AUTH_SOCK={} ORIGINAL_UID={} UPDATE_SYSTEM={} FLATPAK_SYSTEM={} FLATPAK_USER={} COMMIT_AND_PUSH={} RUN_GC={} PRUNE_GENERATIONS={} GENERATION_PRUNE_MODE={} GENERATION_PRUNE_VALUE={} {}",
+            "pkexec env FLAKE_PATH={} COMMIT_MSG={} SSH_AUTH_SOCK={} ORIGINAL_UID={} UPDATE_SYSTEM={} FLATPAK_SYSTEM={} FLATPAK_USER={} FLATPAK_SYSTEM_REFS={} FLATPAK_USER_REFS={} COMMIT_AND_PUSH={} RUN_GC={} PRUNE_GENERATIONS={} GENERATION_PRUNE_MODE={} GENERATION_PRUNE_VALUE={} {}",
             shell_quote(&flake),
             shell_quote(&msg),
             shell_quote(&ssh_auth_sock),
@@ -988,6 +1009,8 @@ impl qobject::UpdateChecker {
             flag(update_system),
             flag(flatpak::has_system_updates(&flatpaks)),
             flag(flatpak::has_user_updates(&flatpaks)),
+            shell_quote(&refs("system")),
+            shell_quote(&refs("user")),
             flag(*self.commit_and_push()),
             flag(*self.run_gc_after_update()),
             flag(*self.prune_generations()),

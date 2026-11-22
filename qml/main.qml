@@ -47,6 +47,7 @@ ApplicationWindow {
         readonly property color fgDim: Qt.rgba(fg.r, fg.g, fg.b, 0.58)
         readonly property color fgFaint: Qt.rgba(fg.r, fg.g, fg.b, 0.35)
         readonly property color accent: palette.highlight
+        readonly property color accentText: "#ffffff"
         readonly property color good: "#30d158"
         readonly property color bad: "#ff453a"
         readonly property color warn: "#ff9f0a"
@@ -194,6 +195,52 @@ ApplicationWindow {
             text: link.text
             color: theme.accent
             font.underline: link.containsMouse
+        }
+    }
+
+    // macOS check box: a small rounded square, accent-filled with a white
+    // check when on.
+    component CheckBox_: MouseArea {
+        id: cb
+        property bool checked: false
+        signal toggled(bool checked)
+        implicitWidth: 17
+        implicitHeight: 17
+        cursorShape: Qt.PointingHandCursor
+        onClicked: toggled(!checked)
+        opacity: enabled ? 1 : 0.4
+        Rectangle {
+            anchors.fill: parent
+            radius: 4.5
+            color: cb.checked ? theme.accent : (theme.dark ? Qt.rgba(1, 1, 1, 0.10) : "#ffffff")
+            border.color: cb.checked ? Qt.rgba(1, 1, 1, 0.3) : (theme.dark ? Qt.rgba(1, 1, 1, 0.28) : Qt.rgba(0, 0, 0, 0.25))
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: 1
+                radius: 3.5
+                visible: cb.checked
+                gradient: Gradient {
+                    GradientStop { position: 0; color: Qt.rgba(1, 1, 1, 0.25) }
+                    GradientStop { position: 0.6; color: Qt.rgba(1, 1, 1, 0) }
+                }
+            }
+            Canvas {
+                anchors.fill: parent
+                visible: cb.checked
+                onPaint: {
+                    const c = getContext("2d");
+                    c.reset();
+                    c.strokeStyle = "#ffffff";
+                    c.lineWidth = 2;
+                    c.lineCap = "round";
+                    c.lineJoin = "round";
+                    c.beginPath();
+                    c.moveTo(width * 0.26, height * 0.53);
+                    c.lineTo(width * 0.44, height * 0.71);
+                    c.lineTo(width * 0.75, height * 0.32);
+                    c.stroke();
+                }
+            }
         }
     }
 
@@ -539,17 +586,18 @@ ApplicationWindow {
         root.requestActivate()
     }
 
-    function startUpdate() {
+    // Install the ticked items (`all`: everything, e.g. Install Now in the
+    // notification).
+    function startUpdate(all) {
         if (terminal.running || !checker.has_updates) return
+        if (!all && checkedCount === 0) return
         page = 0
         showWindow()
+        partialInstall = !all && checkedCount < rows.filter(function(r) { return r.selectable }).length
         terminal.clear()
         root.lastLine = ""
         progressInfo.reset()
-        terminal.runCommand(checker.build_update_command())
-        if (outputExpanded) {
-            Qt.callLater(terminal.focusTerminal)
-        }
+        terminal.runCommand(checker.build_update_command(all ? "" : selectionJson()))
     }
 
     // Autosave function
@@ -678,7 +726,7 @@ ApplicationWindow {
         running: checker.notification_pending
         onTriggered: {
             var answer = checker.poll_notification()
-            if (answer === "install") root.startUpdate()
+            if (answer === "install") root.startUpdate(true)
             else if (answer === "details") root.showWindow()
         }
     }
@@ -713,7 +761,9 @@ ApplicationWindow {
 
                 if (exitCode === 0) {
                     root.updateJustCompleted = true
-                    checker.clear_cached_updates()
+                    // Unticked items are still pending: check again instead.
+                    if (root.partialInstall) checker.check_now()
+                    else checker.clear_cached_updates()
                     if (needsReboot) root.showWindow()
                 } else {
                     root.updateFailed = true
@@ -756,7 +806,7 @@ ApplicationWindow {
                     ? qsTr("Update Now (%1 available)").arg(checker.total_count)
                     : qsTr("Your system is up to date")
                 enabled: checker.has_updates && !terminal.running
-                onTriggered: root.startUpdate()
+                onTriggered: root.startUpdate(true)
             }
 
             Platform.Menu {
@@ -800,6 +850,51 @@ ApplicationWindow {
     }
 
     // --- the window ---
+    // Classic Software Update: a header saying what's available, a table of
+    // updates to tick, the selected update's description (or the update's
+    // terminal) below it, and Install N Items. macOS colours and glass from
+    // hearth's look.
+    menuBar: MenuBar {
+        Menu {
+            title: "Software Update"
+            MenuItem { text: "About Software Update"; enabled: false }
+            MenuSeparator {}
+            MenuItem { text: "Options…"; onTriggered: root.page = 1 }
+            MenuSeparator {}
+            MenuItem { text: "Close Window"; onTriggered: root.hide() }
+            MenuItem { text: "Quit"; onTriggered: checker.quit_app() }
+        }
+        Menu {
+            title: "Edit"
+            MenuItem { text: "Copy"; enabled: root.outputExpanded; onTriggered: terminal.copySelection() }
+            MenuItem { text: "Select All"; enabled: root.outputExpanded; onTriggered: terminal.selectAll() }
+            MenuSeparator {}
+            MenuItem { text: "Select All Updates"; enabled: root.phase === "available"; onTriggered: root.setAllChecked(true) }
+            MenuItem { text: "Deselect All Updates"; enabled: root.phase === "available"; onTriggered: root.setAllChecked(false) }
+        }
+        Menu {
+            title: "Tools"
+            MenuItem { text: checker.checking ? "Checking…" : "Check for Updates"; enabled: !checker.checking && !terminal.running; onTriggered: checker.check_now() }
+            MenuItem { text: root.installLabel(); enabled: root.canInstall; onTriggered: root.startUpdate(false) }
+            MenuSeparator {}
+            Menu {
+                title: "Remind Me Later"
+                enabled: checker.has_updates && !terminal.running
+                MenuItem { text: "In an Hour"; onTriggered: checker.snooze("hour") }
+                MenuItem { text: "Tonight"; onTriggered: checker.snooze("tonight") }
+                MenuItem { text: "Tomorrow"; onTriggered: checker.snooze("tomorrow") }
+            }
+            MenuSeparator {}
+            MenuItem { text: root.outputExpanded ? "Hide Details" : "Show Details"; onTriggered: root.outputExpanded = !root.outputExpanded }
+        }
+        Menu {
+            title: "Help"
+            MenuItem { text: "NixOS Release Notes"; onTriggered: Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/release-notes") }
+            MenuItem { text: "NixOS Manual: Upgrading"; onTriggered: Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/#sec-upgrading") }
+            MenuItem { text: "Flathub"; onTriggered: Qt.openUrlExternally("https://flathub.org") }
+        }
+    }
+
     background: Rectangle {
         color: theme.bg
         // A faint wash of light from the top, as on macOS windows.
@@ -812,18 +907,91 @@ ApplicationWindow {
         }
     }
 
-    // State of the status card.
+    // State of the window.
     readonly property string phase: terminal.running ? "installing"
         : updateFailed ? "failed"
         : (updateJustCompleted && rebootPackages) ? "restart"
         : updateJustCompleted ? "done"
-        : checker.checking ? "checking"
+        : checker.checking && !checker.has_updates ? "checking"
         : checker.has_updates ? "available"
         : "current"
 
+    // --- the update table ---
+    // Rows: the NixOS system (one item: a flake update can't be split), each
+    // Flatpak, and a newer NixOS release (information only: it takes an edit
+    // to flake.nix). Keys are stable across checks so ticks survive them.
+    readonly property var nixUpdates: {
+        try { return checker.updates_json ? JSON.parse(checker.updates_json) : [] } catch (e) { return [] }
+    }
+    readonly property var flatpakUpdates: {
+        if (!checker.include_flatpak) return []
+        try { return checker.flatpak_updates_json ? JSON.parse(checker.flatpak_updates_json) : [] } catch (e) { return [] }
+    }
+    // "26.05" from "NixOS 26.05 (Yarara)".
+    readonly property string systemRelease: (checker.system_version.match(/^NixOS ([^ ]+)/) || ["", ""])[1]
+    readonly property var rows: {
+        var r = []
+        if (nixUpdates.length > 0)
+            r.push({ key: "nixos", kind: "nixos", selectable: true,
+                     name: "NixOS " + (checker.followed_release || systemRelease) + " System Update",
+                     version: systemRelease,
+                     size: checker.download_size || "" })
+        for (var i = 0; i < flatpakUpdates.length; i++) {
+            var f = flatpakUpdates[i]
+            r.push({ key: f.installation + ":" + f.full_ref, kind: "flatpak", selectable: true, data: f,
+                     name: f.name + (f.installation === "user" ? " (yours)" : ""),
+                     version: f.new_version || f.branch, size: f.download_size || "" })
+        }
+        if (checker.new_release)
+            r.push({ key: "release", kind: "release", selectable: false,
+                     name: "NixOS " + checker.new_release + " (new release)",
+                     version: checker.new_release, size: "" })
+        return r
+    }
+    // Keys unticked by hand; everything else is ticked.
+    property var unchecked: ({})
+    function isChecked(row) { return row.selectable && !unchecked[row.key] }
+    function setChecked(row, on) {
+        var u = Object.assign({}, unchecked)
+        if (on) delete u[row.key]; else u[row.key] = true
+        unchecked = u
+    }
+    function setAllChecked(on) {
+        var u = {}
+        if (!on) for (var i = 0; i < rows.length; i++) if (rows[i].selectable) u[rows[i].key] = true
+        unchecked = u
+    }
+    readonly property int checkedCount: {
+        var n = 0
+        for (var i = 0; i < rows.length; i++) if (isChecked(rows[i])) n++
+        return n
+    }
+    readonly property bool canInstall: phase === "available" && checkedCount > 0
+    function installLabel() {
+        return checkedCount === 1 ? "Install 1 Item" : "Install " + checkedCount + " Items"
+    }
+    // What the ticks ask for, for build_update_command.
+    function selectionJson() {
+        var sel = { system: false, flatpaks: [] }
+        for (var i = 0; i < rows.length; i++) {
+            if (!isChecked(rows[i])) continue
+            if (rows[i].kind === "nixos") sel.system = true
+            else if (rows[i].kind === "flatpak") sel.flatpaks.push(rows[i].data.full_ref)
+        }
+        return JSON.stringify(sel)
+    }
+    property string selectedKey: ""
+    readonly property var selectedRow: {
+        for (var i = 0; i < rows.length; i++) if (rows[i].key === selectedKey) return rows[i]
+        return rows.length ? rows[0] : null
+    }
+    // Some items were left unticked: after installing, check again rather
+    // than clearing the list.
+    property bool partialInstall: false
+
     StackLayout {
         anchors.fill: parent
-        anchors.margins: 22
+        anchors.margins: 20
         currentIndex: root.page
 
         // ===== Software Update =====
@@ -831,481 +999,510 @@ ApplicationWindow {
             id: updatePage
             spacing: 14
 
+            // Header: emblem, what's going on, and what to do.
             RowLayout {
                 Layout.fillWidth: true
-                Text_ {
-                    text: "Software Update"
-                    font.family: theme.displayFont
-                    font.pointSize: 17
-                    font.weight: Font.Bold
+                spacing: 16
+
+                // A glass disc with the snowflake (turning while busy) and
+                // a badge: the count, a check mark, ! or ↻.
+                Item {
+                    implicitWidth: 60
+                    implicitHeight: 60
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: width / 2
+                        gradient: Gradient {
+                            GradientStop { position: 0; color: theme.dark ? "#3b4d72" : "#e6eefb" }
+                            GradientStop { position: 1; color: theme.dark ? "#202a40" : "#c8d7f0" }
+                        }
+                        border.color: Qt.rgba(1, 1, 1, theme.dark ? 0.18 : 0.9)
+                        Image {
+                            anchors.centerIn: parent
+                            source: "qrc:/icons/nix-flake.svg"
+                            sourceSize.width: 38
+                            sourceSize.height: 38
+                            RotationAnimator on rotation {
+                                running: root.phase === "checking" || root.phase === "installing"
+                                from: 0; to: 360
+                                duration: 2400
+                                loops: Animation.Infinite
+                                onRunningChanged: if (!running) parent.rotation = 0
+                            }
+                        }
+                    }
+                    Rectangle {
+                        visible: root.phase !== "checking" && root.phase !== "installing"
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: -2
+                        width: Math.max(22, badgeText.implicitWidth + 12)
+                        height: 22
+                        radius: 11
+                        color: root.phase === "available" || root.phase === "failed" ? theme.bad
+                             : root.phase === "restart" ? theme.warn : theme.good
+                        border.color: theme.dark ? "#1e1f22" : "#ffffff"
+                        border.width: 2
+                        Text_ {
+                            id: badgeText
+                            anchors.centerIn: parent
+                            color: "#ffffff"
+                            font.weight: Font.Bold
+                            font.pointSize: 8.5
+                            text: root.phase === "available" ? checker.total_count
+                                : root.phase === "failed" ? "!"
+                                : root.phase === "restart" ? "↻" : "✓"
+                        }
+                    }
+                }
+
+                ColumnLayout {
                     Layout.fillWidth: true
-                }
-                Text_ {
-                    text: checker.system_version
-                    color: theme.fgDim
-                    font.pointSize: theme.smallSize
+                    spacing: 3
+                    Text_ {
+                        Layout.fillWidth: true
+                        font.family: theme.displayFont
+                        font.pointSize: 14
+                        font.weight: Font.Bold
+                        text: {
+                            switch (root.phase) {
+                            case "installing": return "Installing software…"
+                            case "failed": return "The update didn’t finish."
+                            case "restart": return "Restart to finish updating."
+                            case "done": return "Your software is up to date."
+                            case "checking": return "Checking for new software…"
+                            case "available": return "New software is available."
+                            default: return "Your software is up to date."
+                            }
+                        }
+                    }
+                    Text_ {
+                        Layout.fillWidth: true
+                        color: theme.fgDim
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 2
+                        text: {
+                            switch (root.phase) {
+                            case "installing": return progressInfo.statusText || "Preparing…"
+                            case "failed": return "Nothing else was changed. The details show what went wrong."
+                            case "restart": return "Updated: " + root.rebootPackages
+                            case "done": return "Updates were installed. " + checker.system_version
+                            case "checking": return "Looking at " + checker.flake_path + (checker.include_flatpak ? " and Flatpak apps" : "")
+                            case "available": return "Select the items you want, then click Install."
+                            default: return checker.system_version + (checker.last_check_time ? " · checked " + checker.last_check_time : "")
+                            }
+                        }
+                    }
+                    // Progress, while installing and after a failure.
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        implicitHeight: 6
+                        visible: root.phase === "installing" || root.phase === "failed"
+                        Rectangle { anchors.fill: parent; radius: 3; color: theme.control }
+                        Rectangle {
+                            height: parent.height
+                            radius: 3
+                            width: Math.max(height, parent.width * progressInfo.progress)
+                            color: progressInfo.completed ? (progressInfo.succeeded ? theme.good : theme.bad) : theme.accent
+                            Behavior on width { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: parent.radius
+                                gradient: Gradient {
+                                    GradientStop { position: 0; color: Qt.rgba(1, 1, 1, 0.35) }
+                                    GradientStop { position: 0.6; color: Qt.rgba(1, 1, 1, 0) }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
-            // Status card
+            // The update table
             GlassCard {
-                ColumnLayout {
+                id: tableCard
+                Layout.fillHeight: true
+                Layout.preferredHeight: 200
+                padding: 0
+                Item {
                     width: parent.width
-                    spacing: 14
+                    height: tableCard.height
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 16
-
-                        // Status emblem: a glass disc with the snowflake, a
-                        // check mark when up to date, a badge with the count.
-                        Item {
-                            implicitWidth: 64
-                            implicitHeight: 64
-                            Rectangle {
-                                anchors.fill: parent
-                                radius: width / 2
-                                gradient: Gradient {
-                                    GradientStop { position: 0; color: theme.dark ? "#3b4d72" : "#e6eefb" }
-                                    GradientStop { position: 1; color: theme.dark ? "#202a40" : "#c8d7f0" }
-                                }
-                                border.color: Qt.rgba(1, 1, 1, theme.dark ? 0.18 : 0.9)
-                                Image {
-                                    anchors.centerIn: parent
-                                    source: "qrc:/icons/nix-flake.svg"
-                                    sourceSize.width: 40
-                                    sourceSize.height: 40
-                                    RotationAnimator on rotation {
-                                        running: root.phase === "checking" || root.phase === "installing"
-                                        from: 0; to: 360
-                                        duration: 2400
-                                        loops: Animation.Infinite
-                                        onRunningChanged: if (!running) parent.rotation = 0
-                                    }
-                                }
-                            }
-                            Rectangle {
-                                // Badge
-                                visible: root.phase === "current" || root.phase === "done"
-                                         || root.phase === "available" || root.phase === "failed"
-                                         || root.phase === "restart"
-                                anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                anchors.margins: -2
-                                width: Math.max(24, badgeText.implicitWidth + 12)
-                                height: 24
-                                radius: 12
-                                color: root.phase === "available" ? theme.bad
-                                     : root.phase === "failed" ? theme.bad
-                                     : root.phase === "restart" ? theme.warn
-                                     : theme.good
-                                border.color: theme.dark ? "#1e1f22" : "#ffffff"
-                                border.width: 2
-                                Text_ {
-                                    id: badgeText
-                                    anchors.centerIn: parent
-                                    color: "#ffffff"
-                                    font.weight: Font.Bold
-                                    font.pointSize: 9
-                                    text: root.phase === "available" ? checker.total_count
-                                        : root.phase === "failed" ? "!"
-                                        : root.phase === "restart" ? "↻"
-                                        : "✓"
-                                }
-                            }
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Text_ {
-                                Layout.fillWidth: true
-                                font.pointSize: 13
-                                font.weight: Font.DemiBold
-                                text: {
-                                    switch (root.phase) {
-                                    case "installing": return "Installing Updates…"
-                                    case "failed": return "The update didn’t finish"
-                                    case "restart": return "Restart to finish updating"
-                                    case "done": return "Your system is up to date"
-                                    case "checking": return "Checking for updates…"
-                                    case "available": return "Updates Available"
-                                    default: return "Your system is up to date"
-                                    }
-                                }
-                            }
-                            Text_ {
-                                Layout.fillWidth: true
-                                color: theme.fgDim
-                                wrapMode: Text.Wrap
-                                maximumLineCount: 3
-                                text: {
-                                    switch (root.phase) {
-                                    case "installing": return progressInfo.statusText || "Preparing…"
-                                    case "failed": return "See the details below. Nothing else was changed."
-                                    case "restart": return "Updated: " + root.rebootPackages
-                                    case "done": return "Updates were installed. " + checker.system_version
-                                    case "checking": return checker.flake_path
-                                    case "available": {
-                                        var parts = []
-                                        if (checker.update_count > 0)
-                                            parts.push(checker.update_count + (checker.update_count === 1 ? " NixOS package" : " NixOS packages"))
-                                        if (checker.include_flatpak && checker.flatpak_count > 0)
-                                            parts.push(checker.flatpak_count + (checker.flatpak_count === 1 ? " Flatpak update" : " Flatpak updates"))
-                                        var s = parts.join(" and ")
-                                        if (root.sizeText()) s += " · " + root.sizeText()
-                                        return s
-                                    }
-                                    default: return checker.system_version
-                                    }
-                                }
-                            }
-                            Text_ {
-                                Layout.fillWidth: true
-                                visible: root.phase !== "installing"
-                                color: checker.status_message && checker.status_message.startsWith("Error") ? theme.bad : theme.fgFaint
-                                font.pointSize: theme.smallSize
-                                wrapMode: Text.Wrap
-                                maximumLineCount: 2
-                                text: checker.status_message && checker.status_message.startsWith("Error")
-                                    ? checker.status_message
-                                    : "Last checked " + (checker.last_check_time || "never")
-                                      + (checker.snooze_text && root.phase === "available" ? " · " + checker.snooze_text : "")
-                            }
-                        }
-
-                        ColumnLayout {
-                            spacing: 6
-                            Layout.alignment: Qt.AlignVCenter
-                            GlassButton {
-                                Layout.alignment: Qt.AlignRight
-                                primary: root.phase === "available" || root.phase === "restart"
-                                visible: root.phase !== "installing"
-                                text: root.phase === "available" ? "Update Now"
-                                    : root.phase === "restart" ? "Restart Now"
-                                    : root.phase === "checking" ? "Checking…"
-                                    : "Check Now"
-                                enabled: root.phase !== "checking" && flakePathField.text.length > 0
-                                onClicked: {
-                                    if (root.phase === "available") root.startUpdate()
-                                    else if (root.phase === "restart") Qt.callLater(checker.reboot_system)
-                                    else checker.check_now()
-                                }
-                            }
-                            // Later: put off the reminder, like the
-                            // notification's Later buttons.
-                            GlassButton {
-                                id: laterButton
-                                Layout.alignment: Qt.AlignRight
-                                visible: root.phase === "available"
-                                text: "Later ▾"
-                                onClicked: laterMenu.popup(laterButton, 0, laterButton.height + 4)
-                                Menu {
-                                    id: laterMenu
-                                    MenuItem { text: "Remind Me in an Hour"; onTriggered: checker.snooze("hour") }
-                                    MenuItem { text: "Remind Me Tonight"; onTriggered: checker.snooze("tonight") }
-                                    MenuItem { text: "Remind Me Tomorrow"; onTriggered: checker.snooze("tomorrow") }
-                                }
-                            }
-                        }
-                    }
-
-                    // Progress (while installing and after)
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        visible: root.phase === "installing" || root.phase === "failed"
-                        spacing: 6
-                        Item {
-                            Layout.fillWidth: true
-                            implicitHeight: 6
-                            Rectangle {
-                                anchors.fill: parent
-                                radius: 3
-                                color: theme.control
-                            }
-                            Rectangle {
-                                height: parent.height
-                                radius: 3
-                                width: Math.max(height, parent.width * progressInfo.progress)
-                                color: progressInfo.completed ? (progressInfo.succeeded ? theme.good : theme.bad) : theme.accent
-                                Behavior on width { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
-                                Rectangle {
-                                    anchors.fill: parent
-                                    radius: parent.radius
-                                    gradient: Gradient {
-                                        GradientStop { position: 0; color: Qt.rgba(1, 1, 1, 0.35) }
-                                        GradientStop { position: 0.6; color: Qt.rgba(1, 1, 1, 0) }
-                                    }
-                                }
-                            }
-                        }
+                    // Column header
+                    Item {
+                        id: tableHeader
+                        width: parent.width
+                        height: 30
                         RowLayout {
-                            Layout.fillWidth: true
-                            Text_ {
-                                Layout.fillWidth: true
-                                text: root.lastLine || checker.update_status_line || ""
-                                color: theme.fgFaint
-                                font.family: theme.mono
-                                font.pointSize: theme.smallSize - 0.5
-                                elide: Text.ElideMiddle
+                            anchors.fill: parent
+                            anchors.leftMargin: 14
+                            anchors.rightMargin: 24
+                            spacing: 10
+                            Text_ { text: "Install"; Layout.preferredWidth: 44; color: theme.fgDim; font.pointSize: theme.smallSize; font.weight: Font.DemiBold }
+                            Text_ { text: "Name"; Layout.fillWidth: true; color: theme.fgDim; font.pointSize: theme.smallSize; font.weight: Font.DemiBold }
+                            Text_ { text: "Version"; Layout.preferredWidth: 130; color: theme.fgDim; font.pointSize: theme.smallSize; font.weight: Font.DemiBold }
+                            Text_ { text: "Size"; Layout.preferredWidth: 86; horizontalAlignment: Text.AlignRight; color: theme.fgDim; font.pointSize: theme.smallSize; font.weight: Font.DemiBold }
+                        }
+                        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.separator }
+                    }
+
+                    ListView {
+                        id: table
+                        anchors.top: tableHeader.bottom
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        anchors.topMargin: 4
+                        anchors.bottomMargin: 4
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                        model: root.rows
+                        enabled: root.phase === "available"
+                        delegate: MouseArea {
+                            id: rowArea
+                            required property var modelData
+                            required property int index
+                            readonly property bool selected: root.selectedRow && root.selectedRow.key === modelData.key
+                            width: table.width
+                            height: 32
+                            onClicked: root.selectedKey = modelData.key
+                            onDoubleClicked: if (modelData.selectable) root.setChecked(modelData, !root.isChecked(modelData))
+                            Rectangle {
+                                // Banding, and the selection: an accent
+                                // capsule inset from the edges, macOS style.
+                                anchors.fill: parent
+                                anchors.leftMargin: 6
+                                anchors.rightMargin: 6
+                                radius: 7
+                                color: rowArea.selected ? theme.accent
+                                     : rowArea.index % 2 === 1 ? (theme.dark ? Qt.rgba(1, 1, 1, 0.035) : Qt.rgba(0, 0, 0, 0.03))
+                                     : "transparent"
                             }
-                            Text_ {
-                                text: progressInfo.progressText
-                                color: theme.fgDim
-                                font.pointSize: theme.smallSize
-                                font.weight: Font.DemiBold
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 14
+                                anchors.rightMargin: 24
+                                spacing: 10
+                                Item {
+                                    Layout.preferredWidth: 44
+                                    implicitHeight: 18
+                                    CheckBox_ {
+                                        visible: rowArea.modelData.selectable
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        x: 4
+                                        checked: root.isChecked(rowArea.modelData)
+                                        onToggled: function(on) { root.selectedKey = rowArea.modelData.key; root.setChecked(rowArea.modelData, on) }
+                                    }
+                                }
+                                Rectangle {
+                                    // Small icon tile
+                                    implicitWidth: 20
+                                    implicitHeight: 20
+                                    radius: 5
+                                    gradient: Gradient {
+                                        GradientStop { position: 0; color: rowArea.modelData.kind === "flatpak" ? "#5a9bff" : rowArea.modelData.kind === "release" ? "#ffb340" : (theme.dark ? "#3a4a6b" : "#dfe8f7") }
+                                        GradientStop { position: 1; color: rowArea.modelData.kind === "flatpak" ? "#2f6fdc" : rowArea.modelData.kind === "release" ? "#f08a00" : (theme.dark ? "#26324a" : "#c4d3ee") }
+                                    }
+                                    border.color: Qt.rgba(1, 1, 1, 0.22)
+                                    Image {
+                                        visible: rowArea.modelData.kind === "nixos"
+                                        anchors.centerIn: parent
+                                        source: "qrc:/icons/nix-flake.svg"
+                                        sourceSize.width: 14
+                                        sourceSize.height: 14
+                                    }
+                                    Text_ {
+                                        visible: rowArea.modelData.kind !== "nixos"
+                                        anchors.centerIn: parent
+                                        text: rowArea.modelData.kind === "release" ? "!" : "▣"
+                                        color: "#ffffff"
+                                        font.pointSize: 8
+                                        font.weight: Font.Bold
+                                    }
+                                }
+                                Text_ {
+                                    Layout.fillWidth: true
+                                    text: rowArea.modelData.name
+                                    color: rowArea.selected ? theme.accentText : theme.fg
+                                }
+                                Text_ {
+                                    Layout.preferredWidth: 130
+                                    text: rowArea.modelData.version
+                                    color: rowArea.selected ? theme.accentText : theme.fgDim
+                                    font.family: theme.mono
+                                    font.pointSize: theme.smallSize
+                                    elide: Text.ElideMiddle
+                                }
+                                Text_ {
+                                    Layout.preferredWidth: 86
+                                    horizontalAlignment: Text.AlignRight
+                                    text: rowArea.modelData.size || "—"
+                                    color: rowArea.selected ? theme.accentText : theme.fgDim
+                                    font.pointSize: theme.smallSize
+                                }
                             }
                         }
                     }
 
-                    // Details disclosure: the embedded terminal
-                    LinkButton {
-                        visible: root.phase === "installing" || root.phase === "failed"
-                                 || root.phase === "done" || root.phase === "restart" || root.lastLine !== ""
-                        text: root.outputExpanded ? "Hide Details" : "Show Details"
-                        onClicked: {
-                            root.outputExpanded = !root.outputExpanded
-                            if (root.outputExpanded) Qt.callLater(terminal.focusTerminal)
+                    // Empty table
+                    Column {
+                        anchors.centerIn: table
+                        visible: root.rows.length === 0
+                        spacing: 4
+                        Text_ {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: root.phase === "checking" ? "Checking…" : "No updates available"
+                            color: theme.fgDim
+                            font.pointSize: theme.fontSize + 1
+                        }
+                        Text_ {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            visible: !!checker.last_check_time && root.phase !== "checking"
+                            text: "Last checked " + checker.last_check_time
+                            color: theme.fgFaint
+                            font.pointSize: theme.smallSize
                         }
                     }
                 }
             }
 
-            // Below the status card: the update lists (scrolling when long)
-            // or the update's terminal, in the same space, swapped in one frame.
-            ScrollView {
-                id: listsScroll
-                Layout.fillWidth: true
+            // The selected update's description, or the update's terminal
+            // (drawn in the scene: see terminal_widget.h). Same space, swapped
+            // in one frame.
+            GlassCard {
+                id: paneCard
                 Layout.fillHeight: true
-                // Room for the cards' shadows at the sides.
-                Layout.leftMargin: -22
-                Layout.rightMargin: -22
-                visible: !root.outputExpanded
-                contentWidth: availableWidth
-                clip: true
-                ColumnLayout {
-                    x: 22
-                    width: listsScroll.availableWidth - 44
-                    spacing: 14
+                Layout.preferredHeight: 240
+                padding: 0
+                Item {
+                    width: parent.width
+                    height: paneCard.height
 
-                    // A new major release: flake updates stay on the release the
-                    // flake follows, so moving on takes an edit to flake.nix.
-                    GlassCard {
-                        visible: checker.new_release !== "" && !root.outputExpanded
-                        padding: 14
-                        RowLayout {
-                            width: parent.width
-                            spacing: 12
-                            Rectangle {
-                                implicitWidth: 34
-                                implicitHeight: 34
-                                radius: 9
-                                gradient: Gradient {
-                                    GradientStop { position: 0; color: "#ffb340" }
-                                    GradientStop { position: 1; color: "#f08a00" }
-                                }
-                                border.color: Qt.rgba(1, 1, 1, 0.25)
-                                Text_ {
-                                    anchors.centerIn: parent
-                                    text: "!"
-                                    color: "#ffffff"
-                                    font.weight: Font.Bold
-                                    font.pointSize: 13
-                                }
-                            }
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.margins: 1
+                        radius: theme.radius - 1
+                        visible: root.outputExpanded
+                        color: "#000000"
+                        clip: true
+                        TerminalWidget {
+                            id: terminal
+                            anchors.fill: parent
+                            anchors.margins: 10
+                            onRunningChanged: checker.update_running = terminal.running
+                        }
+                    }
+
+                    ScrollView {
+                        id: descScroll
+                        anchors.fill: parent
+                        anchors.margins: 16
+                        visible: !root.outputExpanded
+                        contentWidth: availableWidth
+                        clip: true
+
+                        ColumnLayout {
+                            width: descScroll.availableWidth
+                            spacing: 8
+                            readonly property var row: root.selectedRow
+
+                            // Nothing to install: the system as it is.
                             ColumnLayout {
+                                visible: !parent.row
                                 Layout.fillWidth: true
-                                spacing: 1
+                                spacing: 6
+                                Text_ { text: checker.system_version; font.weight: Font.DemiBold; font.pointSize: theme.fontSize + 1 }
                                 Text_ {
                                     Layout.fillWidth: true
-                                    text: "NixOS " + checker.new_release + " is available"
-                                    font.weight: Font.DemiBold
-                                }
-                                Text_ {
-                                    Layout.fillWidth: true
-                                    color: theme.fgDim
-                                    font.pointSize: theme.smallSize
                                     wrapMode: Text.Wrap
                                     elide: Text.ElideNone
+                                    color: theme.fgDim
+                                    text: "Updates come from the flake at " + checker.flake_path
+                                        + (checker.include_flatpak ? " and from Flatpak (your apps and system-wide ones)." : ".")
+                                        + " Checks run " + root.intervalText()
+                                        + (checker.notify_updates ? ", and a notification asks before anything is installed." : ".")
+                                }
+                                Text_ {
+                                    Layout.fillWidth: true
+                                    visible: checker.status_message.startsWith("Error")
+                                    wrapMode: Text.Wrap
+                                    maximumLineCount: 3
+                                    elide: Text.ElideRight
+                                    color: theme.bad
+                                    text: checker.status_message
+                                }
+                            }
+
+                            // NixOS system update
+                            ColumnLayout {
+                                visible: !!parent.row && parent.row.kind === "nixos"
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Text_ { text: parent.parent.row ? parent.parent.row.name : ""; font.weight: Font.DemiBold; font.pointSize: theme.fontSize + 1 }
+                                Text_ {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    elide: Text.ElideNone
+                                    color: theme.fgDim
+                                    text: root.nixUpdates.length + (root.nixUpdates.length === 1 ? " package changes" : " packages change")
+                                        + (root.sizeText() ? " (" + root.sizeText() + ")" : "") + ". Updates the inputs of "
+                                        + checker.flake_path + " and rebuilds the system"
+                                        + (checker.commit_and_push ? ", then commits and pushes flake.lock." : ".")
+                                }
+                                Text_ {
+                                    Layout.fillWidth: true
+                                    visible: checker.status_message.startsWith("Error")
+                                    wrapMode: Text.Wrap
+                                    maximumLineCount: 3
+                                    elide: Text.ElideRight
+                                    color: theme.bad
+                                    text: checker.status_message
+                                }
+                                Repeater {
+                                    model: parent.visible ? root.nixUpdates : []
+                                    delegate: UpdateRow {
+                                        required property var modelData
+                                        required property int index
+                                        Layout.fillWidth: true
+                                        readonly property var info: root.nixVersions(modelData)
+                                        name: info.name
+                                        from: info.from
+                                        to: info.to
+                                        tag: info.isNew ? "new" : info.rebuilt ? "rebuilt" : ""
+                                    }
+                                }
+                            }
+
+                            // A Flatpak
+                            ColumnLayout {
+                                visible: !!parent.row && parent.row.kind === "flatpak"
+                                Layout.fillWidth: true
+                                spacing: 6
+                                readonly property var f: parent.row && parent.row.kind === "flatpak" ? parent.row.data : null
+                                Text_ { text: parent.f ? parent.f.name : ""; font.weight: Font.DemiBold; font.pointSize: theme.fontSize + 1 }
+                                Text_ {
+                                    Layout.fillWidth: true
+                                    visible: !!parent.f && !!parent.f.summary
+                                    wrapMode: Text.Wrap
+                                    elide: Text.ElideNone
+                                    color: theme.fgDim
+                                    text: parent.f ? parent.f.summary : ""
+                                }
+                                GridLayout {
+                                    columns: 2
+                                    columnSpacing: 14
+                                    rowSpacing: 4
+                                    Layout.topMargin: 4
+                                    readonly property var f: parent.f
+                                    Text_ { text: "Version"; color: theme.fgDim; font.pointSize: theme.smallSize }
+                                    Text_ {
+                                        font.family: theme.mono
+                                        font.pointSize: theme.smallSize
+                                        text: !parent.f ? "" : (parent.f.old_version && parent.f.old_version !== parent.f.new_version
+                                            ? parent.f.old_version + " → " + parent.f.new_version : (parent.f.new_version || parent.f.branch))
+                                    }
+                                    Text_ { text: "Download"; color: theme.fgDim; font.pointSize: theme.smallSize }
+                                    Text_ { font.pointSize: theme.smallSize; text: parent.f && parent.f.download_size ? parent.f.download_size : "Unknown" }
+                                    Text_ { text: "Installed for"; color: theme.fgDim; font.pointSize: theme.smallSize }
+                                    Text_ { font.pointSize: theme.smallSize; text: !parent.f ? "" : (parent.f.installation === "user" ? "You" : "Everyone (system-wide)") + ", from " + parent.f.origin }
+                                    Text_ { text: "Kind"; color: theme.fgDim; font.pointSize: theme.smallSize }
+                                    Text_ { font.pointSize: theme.smallSize; text: parent.f && parent.f.kind === "runtime" ? "Runtime (shared by apps)" : "App" }
+                                    Text_ { text: "Ref"; color: theme.fgDim; font.pointSize: theme.smallSize }
+                                    Text_ { font.family: theme.mono; font.pointSize: theme.smallSize - 0.5; color: theme.fgDim; text: parent.f ? parent.f.full_ref : "" }
+                                }
+                                Text_ {
+                                    Layout.fillWidth: true
+                                    Layout.topMargin: 6
+                                    visible: !!parent.f && !!parent.f.subject
+                                    wrapMode: Text.Wrap
+                                    elide: Text.ElideNone
+                                    color: theme.fgDim
+                                    font.pointSize: theme.smallSize
+                                    text: parent.f ? "Latest change: " + parent.f.subject + (parent.f.date ? " (" + parent.f.date.split(" ")[0] + ")" : "") : ""
+                                }
+                            }
+
+                            // A newer NixOS release
+                            ColumnLayout {
+                                visible: !!parent.row && parent.row.kind === "release"
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Text_ { text: "NixOS " + checker.new_release + " is available"; font.weight: Font.DemiBold; font.pointSize: theme.fontSize + 1 }
+                                Text_ {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    elide: Text.ElideNone
+                                    color: theme.fgDim
                                     text: "Your flake follows " + (checker.followed_release ? "NixOS " + checker.followed_release : "an older release")
-                                        + ", which updates won’t move past. To upgrade, change the nixpkgs input (and any release-pinned inputs) in flake.nix."
+                                        + ". Updates stay on that release, so moving to " + checker.new_release
+                                        + " can’t be installed from here: change the nixpkgs input (and any other release-pinned inputs, such as home-manager) in flake.nix, then update. Read the release notes first for changes that need attention."
                                 }
-                            }
-                            GlassButton {
-                                text: "Release Notes"
-                                onClicked: Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/release-notes")
-                            }
-                        }
-                    }
-
-                    // Pending updates
-                    GlassCard {
-                        id: updatesCard
-                        visible: !root.outputExpanded && checker.has_updates && root.phase !== "installing"
-                        padding: 14
-                        ColumnLayout {
-                            width: parent.width
-                            spacing: 10
-
-                            // NixOS
-                            RowLayout {
-                                Layout.fillWidth: true
-                                visible: checker.update_count > 0
-                                spacing: 12
-                                IconTile { source: "qrc:/icons/nix-flake.svg" }
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 1
-                                    Text_ { text: "NixOS"; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                                    Text_ {
-                                        Layout.fillWidth: true
-                                        color: theme.fgDim
-                                        font.pointSize: theme.smallSize
-                                        text: checker.update_count + (checker.update_count === 1 ? " package" : " packages")
-                                            + (root.sizeText() ? " · " + root.sizeText() : "")
-                                    }
-                                }
-                                LinkButton {
-                                    text: root.nixListExpanded ? "Less Info" : "More Info…"
-                                    onClicked: root.nixListExpanded = !root.nixListExpanded
-                                }
-                            }
-                            ListView {
-                                id: nixList
-                                Layout.fillWidth: true
-                                Layout.leftMargin: 46
-                                visible: root.nixListExpanded && checker.update_count > 0
-                                implicitHeight: Math.min(contentHeight, 180)
-                                clip: true
-                                boundsBehavior: Flickable.StopAtBounds
-                                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                                model: {
-                                    try { return checker.updates_json ? JSON.parse(checker.updates_json) : [] }
-                                    catch (e) { return [] }
-                                }
-                                delegate: UpdateRow {
-                                    width: nixList.width - 12
-                                    readonly property var info: root.nixVersions(modelData)
-                                    name: info.name
-                                    from: info.from
-                                    to: info.to
-                                    tag: info.isNew ? "new" : info.rebuilt ? "rebuilt" : ""
-                                }
-                            }
-
-                            Separator {
-                                visible: checker.update_count > 0 && checker.include_flatpak && checker.flatpak_count > 0
-                            }
-
-                            // Flatpak
-                            RowLayout {
-                                Layout.fillWidth: true
-                                visible: checker.include_flatpak && checker.flatpak_count > 0
-                                spacing: 12
-                                IconTile { flatpakGlyph: true }
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 1
-                                    Text_ { text: "Flatpak Apps"; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                                    Text_ {
-                                        Layout.fillWidth: true
-                                        color: theme.fgDim
-                                        font.pointSize: theme.smallSize
-                                        text: {
-                                            var list = flatpakList.model
-                                            var apps = 0, sys = 0, user = 0
-                                            for (var i = 0; i < list.length; i++) {
-                                                if (list[i].kind === "app") apps++
-                                                if (list[i].installation === "system") sys++; else user++
-                                            }
-                                            var s = checker.flatpak_count + (checker.flatpak_count === 1 ? " update" : " updates")
-                                            if (apps !== list.length) s += " (" + apps + (apps === 1 ? " app, " : " apps, ") + (list.length - apps) + " runtime" + (list.length - apps === 1 ? ")" : "s)")
-                                            if (sys && user) s += " · system and user"
-                                            else if (user) s += " · your apps"
-                                            return s
-                                        }
-                                    }
-                                }
-                                LinkButton {
-                                    text: root.flatpakListExpanded ? "Less Info" : "More Info…"
-                                    onClicked: root.flatpakListExpanded = !root.flatpakListExpanded
-                                }
-                            }
-                            ListView {
-                                id: flatpakList
-                                Layout.fillWidth: true
-                                Layout.leftMargin: 46
-                                visible: root.flatpakListExpanded && checker.include_flatpak && checker.flatpak_count > 0
-                                implicitHeight: Math.min(contentHeight, 180)
-                                clip: true
-                                boundsBehavior: Flickable.StopAtBounds
-                                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                                model: {
-                                    try { return checker.flatpak_updates_json ? JSON.parse(checker.flatpak_updates_json) : [] }
-                                    catch (e) { return [] }
-                                }
-                                delegate: UpdateRow {
-                                    width: flatpakList.width - 12
-                                    name: modelData.name
-                                    from: modelData.old_version !== modelData.new_version ? modelData.old_version : ""
-                                    to: modelData.new_version || modelData.branch
-                                    tag: modelData.installation === "user" ? "user" : modelData.kind === "runtime" ? "runtime" : ""
+                                GlassButton {
+                                    text: "Release Notes"
+                                    onClicked: Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/release-notes")
                                 }
                             }
                         }
                     }
-
-                    // Automatic updates summary, opens the sheet
-                    GlassCard {
-                        visible: !root.outputExpanded
-                        padding: 6
-                        SettingRow {
-                            width: parent.width - 24
-                            x: 12
-                            label: "Automatic updates"
-                            note: "Check " + root.intervalText()
-                                + (checker.notify_updates ? ", notify me" : "")
-                                + (checker.include_flatpak ? ", include Flatpak apps" : "")
-                            GlassButton {
-                                text: "Options…"
-                                onClicked: root.page = 1
-                            }
-                        }
-                    }
-
-                    Item { implicitHeight: 8 }
                 }
             }
 
-            // The update's terminal (drawn in the scene: see terminal_widget.h).
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                visible: root.outputExpanded
-                radius: 12
-                color: "#000000"
-                border.color: theme.edge
-                clip: true
-                TerminalWidget {
-                    id: terminal
-                    anchors.fill: parent
-                    anchors.margins: 8
-                    onRunningChanged: checker.update_running = terminal.running
-                }
-            }
-
-
+            // Footer: status note and options on the left, actions on the right.
             RowLayout {
                 Layout.fillWidth: true
-                Text_ {
+                spacing: 10
+                ColumnLayout {
                     Layout.fillWidth: true
-                    text: checker.build_info || ""
-                    color: theme.fgFaint
-                    font.pointSize: theme.smallSize - 0.5
+                    spacing: 1
+                    Text_ {
+                        Layout.fillWidth: true
+                        color: theme.fgFaint
+                        font.pointSize: theme.smallSize
+                        text: (checker.last_check_time ? "Last checked " + checker.last_check_time : "Not checked yet")
+                            + (checker.snooze_text && root.phase === "available" ? " · " + checker.snooze_text : "")
+                    }
+                    RowLayout {
+                        spacing: 14
+                        LinkButton { text: "Options…"; onClicked: root.page = 1 }
+                        LinkButton {
+                            visible: root.phase === "installing" || root.phase === "failed" || root.phase === "done"
+                                     || root.phase === "restart" || root.lastLine !== ""
+                            text: root.outputExpanded ? "Hide Details" : "Show Details"
+                            onClicked: root.outputExpanded = !root.outputExpanded
+                        }
+                    }
                 }
                 GlassButton {
-                    text: "Close"
-                    onClicked: root.hide()
+                    id: laterButton
+                    visible: root.phase === "available"
+                    text: "Later ▾"
+                    onClicked: laterMenu.popup(laterButton, 0, -laterMenu.implicitHeight - 4)
+                    Menu {
+                        id: laterMenu
+                        MenuItem { text: "Remind Me in an Hour"; onTriggered: checker.snooze("hour") }
+                        MenuItem { text: "Remind Me Tonight"; onTriggered: checker.snooze("tonight") }
+                        MenuItem { text: "Remind Me Tomorrow"; onTriggered: checker.snooze("tomorrow") }
+                    }
+                }
+                GlassButton {
+                    visible: root.phase !== "available" && root.phase !== "restart"
+                    text: root.phase === "checking" ? "Checking…" : root.phase === "installing" ? "Installing…" : "Check Now"
+                    enabled: root.phase !== "checking" && root.phase !== "installing" && flakePathField.text.length > 0
+                    onClicked: checker.check_now()
+                }
+                GlassButton {
+                    visible: root.phase === "available"
+                    primary: true
+                    text: root.installLabel()
+                    enabled: root.canInstall
+                    onClicked: root.startUpdate(false)
+                }
+                GlassButton {
+                    visible: root.phase === "restart"
+                    primary: true
+                    text: "Restart Now"
+                    onClicked: Qt.callLater(checker.reboot_system)
                 }
             }
         }

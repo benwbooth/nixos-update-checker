@@ -24,6 +24,21 @@ pub struct FlatpakUpdate {
     pub old_version: String,
     #[serde(default)]
     pub new_version: String,
+    /// Full ref ("app/org.example.App/x86_64/stable"), what `flatpak update` takes
+    #[serde(default)]
+    pub full_ref: String,
+    /// From `flatpak remote-info`: "142.0 MB"
+    #[serde(default)]
+    pub download_size: String,
+    /// One-line description of the app ("Jellyfin desktop client")
+    #[serde(default)]
+    pub summary: String,
+    /// The new commit's subject: the closest thing to release notes
+    #[serde(default)]
+    pub subject: String,
+    /// The new commit's date ("2026-11-21 07:35:15 +0000")
+    #[serde(default)]
+    pub date: String,
 }
 
 impl FlatpakUpdate {
@@ -147,9 +162,39 @@ fn parse_updates(
                 kind: kind.to_string(),
                 old_version,
                 new_version: version.to_string(),
+                full_ref: r.to_string(),
+                download_size: String::new(),
+                summary: String::new(),
+                subject: String::new(),
+                date: String::new(),
             })
         })
         .collect()
+}
+
+/// Fills in size, summary and latest change from `flatpak remote-info`.
+fn add_remote_info(u: &mut FlatpakUpdate) {
+    let Some(out) = flatpak(&["remote-info", &format!("--{}", u.installation), &u.origin, &u.full_ref])
+    else {
+        return;
+    };
+    let mut lines = out.lines().map(str::trim).filter(|l| !l.is_empty());
+    // First line: "Name - summary".
+    if let Some(first) = lines.next() {
+        if let Some((_, summary)) = first.split_once(" - ") {
+            u.summary = summary.trim().to_string();
+        }
+    }
+    for line in out.lines() {
+        let Some((key, value)) = line.split_once(':') else { continue };
+        let value = value.trim().to_string();
+        match key.trim() {
+            "Download Size" | "Download" => u.download_size = value,
+            "Subject" => u.subject = value,
+            "Date" => u.date = value,
+            _ => {}
+        }
+    }
 }
 
 /// All pending Flatpak updates. Never fails: no flatpak, no network or no
@@ -171,6 +216,14 @@ pub fn check_updates() -> Vec<FlatpakUpdate> {
             &masks(installation),
             &installed_versions(installation),
         ));
+    }
+    // Details for each, a few at a time (each is a network round trip).
+    for chunk in updates.chunks_mut(6) {
+        std::thread::scope(|scope| {
+            for u in chunk.iter_mut() {
+                scope.spawn(move || add_remote_info(u));
+            }
+        });
     }
     // Apps first, then runtimes, each by name.
     updates.sort_by(|a, b| (a.kind != "app", a.name.to_lowercase()).cmp(&(b.kind != "app", b.name.to_lowercase())));

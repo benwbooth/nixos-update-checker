@@ -106,7 +106,9 @@ git config --global --add safe.directory "$FLAKE_PATH"
 update_flatpaks() {
     if [ "$FLATPAK_SYSTEM" = "1" ]; then
         echo "${BOLD}${GREEN}━━━ Updating Flatpak apps (system) ━━━${NC}"
-        if ! flatpak update --system --noninteractive -y; then
+        # Only the refs picked in the list (all of them when none are named).
+        # shellcheck disable=SC2086
+        if ! flatpak update --system --noninteractive -y $FLATPAK_SYSTEM_REFS; then
             echo "${RED}Failed to update system Flatpak apps${NC}"
             FAILED=1
         fi
@@ -121,7 +123,7 @@ update_flatpaks() {
             echo "${YELLOW}Could not tell which user to update Flatpak apps for; skipping${NC}"
         elif ! runuser -u "$FLATPAK_USER_NAME" -- env HOME="$FLATPAK_USER_HOME" \
                 XDG_RUNTIME_DIR="/run/user/${ORIGINAL_UID:-${PKEXEC_UID:-}}" \
-                flatpak update --user --noninteractive -y; then
+                flatpak update --user --noninteractive -y $FLATPAK_USER_REFS; then
             echo "${RED}Failed to update user Flatpak apps${NC}"
             FAILED=1
         fi
