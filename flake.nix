@@ -98,6 +98,8 @@
           nix
           git
           coreutils
+          libnotify  # notify-send: the Updates Available notification
+          curl       # new major release check (channels.nixos.org)
         ];
 
         # Create a wrapped cargo that uses the qtEnv qmake

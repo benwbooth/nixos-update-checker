@@ -35,6 +35,23 @@ pub mod qobject {
         #[qproperty(QString, download_size)]
         #[qproperty(QString, unpacked_size)]
         #[qproperty(QString, build_info)]
+        // Flatpak updates (system + user installations), JSON array
+        #[qproperty(QString, flatpak_updates_json)]
+        #[qproperty(i32, flatpak_count)]
+        // NixOS packages + Flatpak refs
+        #[qproperty(i32, total_count)]
+        #[qproperty(bool, include_flatpak)]
+        #[qproperty(bool, notify_updates)]
+        // A notification is up and waiting for an answer
+        #[qproperty(bool, notification_pending)]
+        // "Reminder at 9:00 AM tomorrow" while a Later is in effect
+        #[qproperty(QString, snooze_text)]
+        // "NixOS 26.05 (Yarara)"
+        #[qproperty(QString, system_version)]
+        // A newer major NixOS release than the flake follows ("26.11"), else ""
+        #[qproperty(QString, new_release)]
+        // The release the flake follows ("26.05")
+        #[qproperty(QString, followed_release)]
         type UpdateChecker = super::UpdateCheckerRust;
 
         /// Trigger a manual update check (async - spawns background thread)
@@ -113,18 +130,24 @@ pub mod qobject {
         #[qinvokable]
         fn get_update_exit_code(self: &UpdateChecker, text: QString) -> i32;
 
-        /// Build the full pkexec update command string
+        /// Build the full pkexec update command string from the current
+        /// updates and settings
         #[qinvokable]
-        fn build_update_command(
-            self: &UpdateChecker,
-            flake_path: QString,
-            commit_msg: QString,
-            commit_and_push: bool,
-            run_gc: bool,
-            prune_generations: bool,
-            generation_prune_mode: QString,
-            generation_prune_value: i32,
-        ) -> QString;
+        fn build_update_command(self: &UpdateChecker) -> QString;
+
+        /// Post the "Updates Available" notification if it's due (new
+        /// updates, or a Later has run out). Call after checks and once a minute.
+        #[qinvokable]
+        fn maybe_notify(self: Pin<&mut UpdateChecker>);
+
+        /// The notification's answer once it has one ("install", "details",
+        /// "later" already applied), else ""
+        #[qinvokable]
+        fn poll_notification(self: Pin<&mut UpdateChecker>) -> QString;
+
+        /// Put off the reminder: "hour", "tonight" or "tomorrow"
+        #[qinvokable]
+        fn snooze(self: Pin<&mut UpdateChecker>, kind: QString);
     }
 
     unsafe extern "RustQt" {
@@ -161,6 +184,126 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::{Config, GenerationPruneMode, IntervalUnit};
 use crate::flake_checker::{self, FlakeUpdate, CheckResult};
+use crate::flatpak::{self, FlatpakUpdate};
+use crate::release;
+
+fn flatpaks_from_json(json: &str) -> Vec<FlatpakUpdate> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+fn flatpaks_to_json(updates: &[FlatpakUpdate]) -> String {
+    serde_json::to_string(updates).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Identifies a set of pending updates, so a notification is posted once per set.
+fn update_signature(nix: &[FlakeUpdate], flatpaks: &[FlatpakUpdate]) -> String {
+    let mut parts: Vec<String> = nix.iter().map(|u| u.package_name.clone()).collect();
+    parts.extend(flatpaks.iter().map(|f| format!("{}/{}@{}", f.app_id, f.branch, f.new_version)));
+    parts.sort();
+    parts.join("\n")
+}
+
+/// "42 NixOS packages (1.1 GiB) and 5 Flatpak apps"
+fn describe_updates(nix_count: usize, download_size: &str, flatpaks: &[FlatpakUpdate]) -> String {
+    let mut parts = Vec::new();
+    if nix_count > 0 {
+        let size = if download_size.is_empty() { String::new() } else { format!(" ({download_size})") };
+        parts.push(format!(
+            "{nix_count} NixOS {}{size}",
+            if nix_count == 1 { "package" } else { "packages" }
+        ));
+    }
+    if !flatpaks.is_empty() {
+        let n = flatpaks.len();
+        parts.push(format!("{n} Flatpak {}", if n == 1 { "update" } else { "updates" }));
+    }
+    parts.join(" and ")
+}
+
+/// Unix time a Later choice snoozes the reminder until.
+fn snooze_target(kind: &str) -> i64 {
+    use chrono::{Duration, Local, TimeZone};
+    let now = Local::now();
+    let at = |day: chrono::NaiveDate, hour: u32| {
+        Local
+            .from_local_datetime(&day.and_hms_opt(hour, 0, 0).unwrap())
+            .earliest()
+            .map(|t| t.timestamp())
+            .unwrap_or(now.timestamp() + 3600)
+    };
+    match kind {
+        "tonight" => {
+            let nine = at(now.date_naive(), 21);
+            // Already evening: a couple of hours from now.
+            if nine - now.timestamp() < 3600 { now.timestamp() + 2 * 3600 } else { nine }
+        }
+        "tomorrow" => at(now.date_naive() + Duration::days(1), 9),
+        _ => now.timestamp() + 3600,
+    }
+}
+
+fn describe_snooze(until: i64) -> String {
+    use chrono::{Local, TimeZone};
+    let now = Local::now();
+    if until <= now.timestamp() {
+        return String::new();
+    }
+    let Some(t) = Local.timestamp_opt(until, 0).single() else {
+        return String::new();
+    };
+    let time = t.format("%-I:%M %p");
+    if t.date_naive() == now.date_naive() {
+        format!("Reminder at {time}")
+    } else if t.date_naive() == now.date_naive() + chrono::Duration::days(1) {
+        format!("Reminder at {time} tomorrow")
+    } else {
+        format!("Reminder {}", t.format("%a %-I:%M %p"))
+    }
+}
+
+fn os_pretty_name() -> String {
+    std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|text| {
+            text.lines().find_map(|l| {
+                l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string())
+            })
+        })
+        .unwrap_or_else(|| "NixOS".to_string())
+}
+
+/// A one-off notification that a new major release is out (it takes an edit
+/// to flake.nix, so there's no Install button). Off the UI thread.
+fn notify_new_release(release: &str, followed: &str) {
+    let body = format!(
+        "Your flake follows NixOS {followed}. Moving to {release} takes changing the nixpkgs input in flake.nix; read the release notes first."
+    );
+    let title = format!("NixOS {release} is available");
+    std::thread::spawn(move || {
+        let _ = std::process::Command::new("notify-send")
+            .args([
+                "--app-name=Software Update",
+                &format!("--icon={}", notification_icon()),
+                "--hint=string:desktop-entry:nixos-update-checker",
+                &title,
+                &body,
+            ])
+            .output();
+    });
+}
+
+fn notification_icon() -> String {
+    let in_source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources/icons/png/nixos-update-checker-128.png");
+    if in_source.is_file() {
+        in_source.to_string_lossy().into_owned()
+    } else {
+        "system-software-update".to_string()
+    }
+}
+
+/// The answer from the notification thread (notify-send --wait).
+static NOTIFY_ANSWER: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 
 /// Rust implementation of the UpdateChecker QObject
 #[derive(Default)]
@@ -187,6 +330,16 @@ pub struct UpdateCheckerRust {
     download_size: QString,
     unpacked_size: QString,
     build_info: QString,
+    flatpak_updates_json: QString,
+    flatpak_count: i32,
+    total_count: i32,
+    include_flatpak: bool,
+    notify_updates: bool,
+    notification_pending: bool,
+    snooze_text: QString,
+    system_version: QString,
+    new_release: QString,
+    followed_release: QString,
     // Internal: cached config for is_check_due
     #[allow(dead_code)]
     cached_last_check_timestamp: i64,
@@ -303,27 +456,39 @@ fn format_relative_time(timestamp: i64) -> String {
 }
 
 /// Build tooltip text with last check time and update status
-fn build_tooltip(updates: &[FlakeUpdate], last_check_timestamp: i64, download_size: &str, unpacked_size: &str) -> String {
+fn build_tooltip(updates: &[FlakeUpdate], flatpaks: &[FlatpakUpdate], last_check_timestamp: i64, download_size: &str, unpacked_size: &str) -> String {
     let last_checked = format_relative_time(last_check_timestamp);
 
-    if updates.is_empty() {
-        format!(
-            "NixOS Update Checker\nNo updates available\nLast checked: {}",
-            last_checked
-        )
-    } else {
-        format!(
-            "NixOS Update Checker\n{}\nLast checked: {}",
-            flake_checker::format_updates_tooltip(updates, download_size, unpacked_size),
-            last_checked
-        )
+    let mut lines = vec!["Software Update".to_string()];
+    if updates.is_empty() && flatpaks.is_empty() {
+        lines.push("Your system is up to date".to_string());
     }
+    if !updates.is_empty() {
+        lines.push(flake_checker::format_updates_tooltip(updates, download_size, unpacked_size));
+    }
+    if !flatpaks.is_empty() {
+        let shown: Vec<String> = flatpaks.iter().take(6).map(|f| format!("  {}", f.display())).collect();
+        let more = if flatpaks.len() > 6 { format!("\n  ...and {} more", flatpaks.len() - 6) } else { String::new() };
+        lines.push(format!(
+            "{} Flatpak {}:\n{}{}",
+            flatpaks.len(),
+            if flatpaks.len() == 1 { "update" } else { "updates" },
+            shown.join("\n"),
+            more
+        ));
+    }
+    lines.push(format!("Last checked: {last_checked}"));
+    lines.join("\n")
 }
 
 use once_cell::sync::Lazy;
 
 /// Result from background check thread
-type BgCheckResult = Result<CheckResult, flake_checker::FlakeCheckError>;
+type BgCheckResult = (
+    Result<CheckResult, flake_checker::FlakeCheckError>,
+    Option<Vec<FlatpakUpdate>>,
+    Option<String>,
+);
 
 /// Global storage for background check result
 static CHECK_RESULT: Lazy<Arc<Mutex<Option<BgCheckResult>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
@@ -351,20 +516,26 @@ impl qobject::UpdateChecker {
 
         self.as_mut().set_checking(true);
         self.as_mut().set_status_message(QString::from("Checking for updates..."));
-        self.as_mut().set_tooltip_text(QString::from("NixOS Update Checker\nChecking for updates..."));
+        self.as_mut().set_tooltip_text(QString::from("Software Update\nChecking for updates..."));
         self.as_mut().check_status_changed();
 
-        // Spawn background thread for the check
+        // Spawn background threads for the check: the flake and Flatpak at once.
         let flake_path_clone = flake_path.clone();
+        let include_flatpak = *self.as_ref().include_flatpak();
         std::thread::spawn(move || {
+            let flatpak_thread = include_flatpak.then(|| std::thread::spawn(flatpak::check_updates));
+            let release_path = std::path::PathBuf::from(&flake_path_clone);
+            let release_thread = std::thread::spawn(move || release::newer_release(&release_path));
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(flake_checker::check_for_updates(
                 &std::path::PathBuf::from(&flake_path_clone),
             ));
+            let flatpaks = flatpak_thread.and_then(|t| t.join().ok());
+            let new_release = release_thread.join().ok().flatten();
 
             // Store result for main thread to pick up
             if let Ok(mut stored) = CHECK_RESULT.lock() {
-                *stored = Some(result);
+                *stored = Some((result, flatpaks, new_release));
             }
         });
     }
@@ -384,9 +555,30 @@ impl qobject::UpdateChecker {
             stored.take()
         };
 
-        if let Some(result) = result {
+        if let Some((result, flatpaks, new_release)) = result {
             // Process the result
             let check_timestamp = chrono::Utc::now().timestamp();
+
+            // Flatpak first: a failed flake check still reports these.
+            let flatpaks = flatpaks.unwrap_or_default();
+            let flatpak_json = flatpaks_to_json(&flatpaks);
+            self.as_mut().set_flatpak_updates_json(QString::from(&flatpak_json));
+            self.as_mut().set_flatpak_count(flatpaks.len() as i32);
+            let new_release = new_release.unwrap_or_default();
+            self.as_mut().set_new_release(QString::from(&new_release));
+            let followed = release::followed_release(std::path::Path::new(&self.as_ref().flake_path().to_string()))
+                .map(release::fmt)
+                .unwrap_or_default();
+            self.as_mut().set_followed_release(QString::from(&followed));
+            if let Ok(mut config) = Config::load() {
+                config.cached_flatpak_json = flatpak_json;
+                if !new_release.is_empty() && config.release_notified != new_release && config.notify_updates {
+                    config.release_notified = new_release.clone();
+                    notify_new_release(&new_release, &followed);
+                }
+                config.new_release = new_release;
+                let _ = config.save();
+            }
 
             match result {
                 Ok(check_result) => {
@@ -394,10 +586,10 @@ impl qobject::UpdateChecker {
                     let has_updates = !updates.is_empty();
                     let count = updates.len() as i32;
                     let summary = QString::from(&flake_checker::format_updates_tooltip(updates, &check_result.download_size, &check_result.unpacked_size));
-                    let tooltip = QString::from(&build_tooltip(updates, check_timestamp, &check_result.download_size, &check_result.unpacked_size));
+                    let tooltip = QString::from(&build_tooltip(updates, &flatpaks, check_timestamp, &check_result.download_size, &check_result.unpacked_size));
                     let json = updates_to_json(updates);
 
-                    self.as_mut().set_has_updates(has_updates);
+                    self.as_mut().set_has_updates(has_updates || !flatpaks.is_empty());
                     self.as_mut().set_update_count(count);
                     self.as_mut().set_update_summary(summary);
                     self.as_mut().set_tooltip_text(tooltip);
@@ -418,10 +610,12 @@ impl qobject::UpdateChecker {
                 Err(e) => {
                     self.as_mut().set_status_message(QString::from(&format!("Error: {}", e)));
                     let tooltip = QString::from(&format!(
-                        "NixOS Update Checker\nCheck failed\nLast checked: {}",
+                        "Software Update\nCheck failed\nLast checked: {}",
                         format_relative_time(check_timestamp)
                     ));
                     self.as_mut().set_tooltip_text(tooltip);
+                    let nix_pending = *self.as_ref().update_count() > 0;
+                    self.as_mut().set_has_updates(nix_pending || !flatpaks.is_empty());
 
                     // Still save timestamp
                     if let Ok(mut config) = Config::load() {
@@ -436,9 +630,12 @@ impl qobject::UpdateChecker {
                 &format_relative_time(check_timestamp)
             ));
 
+            let total = *self.as_ref().update_count() + *self.as_ref().flatpak_count();
+            self.as_mut().set_total_count(total);
             self.as_mut().set_checking(false);
             self.as_mut().check_status_changed();
             self.as_mut().updates_changed();
+            self.as_mut().maybe_notify();
         }
     }
 
@@ -464,8 +661,8 @@ impl qobject::UpdateChecker {
             flake_path: flake_path.to_string(),
             check_interval: interval as u32,
             check_interval_unit: IntervalUnit::from_str(&unit.to_string()),
-            last_check_timestamp: existing.last_check_timestamp,
-            cached_updates_json: existing.cached_updates_json,
+            include_flatpak: *self.as_ref().include_flatpak(),
+            notify_updates: *self.as_ref().notify_updates(),
             commit_and_push: *self.as_ref().commit_and_push(),
             run_gc_after_update: *self.as_ref().run_gc_after_update(),
             prune_generations: *self.as_ref().prune_generations(),
@@ -473,8 +670,7 @@ impl qobject::UpdateChecker {
                 &self.as_ref().generation_prune_mode().to_string(),
             ),
             generation_prune_value: (*self.as_ref().generation_prune_value()).max(1) as u32,
-            cached_download_size: existing.cached_download_size,
-            cached_unpacked_size: existing.cached_unpacked_size,
+            ..existing
         };
 
         if let Err(e) = config.save() {
@@ -505,9 +701,23 @@ impl qobject::UpdateChecker {
 
                 // Restore cached updates from last check
                 let updates = updates_from_json(&config.cached_updates_json);
-                let has_updates = !updates.is_empty();
+                let flatpaks = if config.include_flatpak { flatpaks_from_json(&config.cached_flatpak_json) } else { Vec::new() };
+                let has_updates = !updates.is_empty() || !flatpaks.is_empty();
                 let count = updates.len() as i32;
 
+                self.as_mut().set_include_flatpak(config.include_flatpak);
+                self.as_mut().set_notify_updates(config.notify_updates);
+                self.as_mut().set_flatpak_updates_json(QString::from(&flatpaks_to_json(&flatpaks)));
+                self.as_mut().set_flatpak_count(flatpaks.len() as i32);
+                self.as_mut().set_total_count(count + flatpaks.len() as i32);
+                self.as_mut().set_snooze_text(QString::from(&describe_snooze(config.snooze_until)));
+                self.as_mut().set_system_version(QString::from(&os_pretty_name()));
+                self.as_mut().set_new_release(QString::from(&config.new_release));
+                self.as_mut().set_followed_release(QString::from(
+                    &release::followed_release(std::path::Path::new(&config.flake_path))
+                        .map(release::fmt)
+                        .unwrap_or_default(),
+                ));
                 self.as_mut().set_has_updates(has_updates);
                 self.as_mut().set_update_count(count);
                 self.as_mut().set_updates_json(QString::from(&config.cached_updates_json));
@@ -522,7 +732,7 @@ impl qobject::UpdateChecker {
                 self.as_mut().set_unpacked_size(QString::from(&config.cached_unpacked_size));
 
                 // Set initial tooltip with cached status
-                let tooltip = QString::from(&build_tooltip(&updates, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size));
+                let tooltip = QString::from(&build_tooltip(&updates, &flatpaks, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size));
                 self.as_mut().set_tooltip_text(tooltip);
 
                 self.as_mut().set_commit_and_push(config.commit_and_push);
@@ -575,7 +785,10 @@ impl qobject::UpdateChecker {
                 self.as_mut()
                     .set_generation_prune_mode(QString::from("keep-latest"));
                 self.as_mut().set_generation_prune_value(10);
-                self.as_mut().set_tooltip_text(QString::from("NixOS Update Checker\nLast checked: Never"));
+                self.as_mut().set_include_flatpak(true);
+                self.as_mut().set_notify_updates(true);
+                self.as_mut().set_system_version(QString::from(&os_pretty_name()));
+                self.as_mut().set_tooltip_text(QString::from("Software Update\nLast checked: Never"));
                 self.as_mut().config_loaded();
             }
         }
@@ -611,17 +824,23 @@ impl qobject::UpdateChecker {
         self.as_mut().set_update_summary(QString::from(""));
         self.as_mut().set_download_size(QString::from(""));
         self.as_mut().set_unpacked_size(QString::from(""));
+        self.as_mut().set_flatpak_updates_json(QString::from("[]"));
+        self.as_mut().set_flatpak_count(0);
+        self.as_mut().set_total_count(0);
+        self.as_mut().set_snooze_text(QString::from(""));
 
         // Also clear in the config file so reloads don't repopulate
         if let Ok(mut config) = Config::load() {
             config.cached_updates_json = "[]".to_string();
+            config.cached_flatpak_json = "[]".to_string();
+            config.snooze_until = 0;
             config.cached_download_size = String::new();
             config.cached_unpacked_size = String::new();
             let _ = config.save();
         }
 
         // Update tooltip to reflect no updates
-        self.as_mut().set_tooltip_text(QString::from("NixOS Update Checker - No updates"));
+        self.as_mut().set_tooltip_text(QString::from("Software Update\nYour system is up to date"));
         self.as_mut().updates_changed();
     }
 
@@ -671,10 +890,12 @@ impl qobject::UpdateChecker {
                 // Don't overwrite tooltip during an active update
                 if !*self.as_ref().update_running() {
                     let updates = updates_from_json(&config.cached_updates_json);
-                    let tooltip = build_tooltip(&updates, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size);
+                    let flatpaks = if config.include_flatpak { flatpaks_from_json(&config.cached_flatpak_json) } else { Vec::new() };
+                    let tooltip = build_tooltip(&updates, &flatpaks, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size);
                     self.as_mut().set_tooltip_text(QString::from(&tooltip));
                 }
             }
+            self.as_mut().set_snooze_text(QString::from(&describe_snooze(config.snooze_until)));
         }
     }
 
@@ -735,21 +956,22 @@ impl qobject::UpdateChecker {
         }
     }
 
-    /// Build the full pkexec update command string
-    pub fn build_update_command(
-        &self,
-        flake_path: QString,
-        commit_msg: QString,
-        commit_and_push: bool,
-        run_gc: bool,
-        prune_generations: bool,
-        generation_prune_mode: QString,
-        generation_prune_value: i32,
-    ) -> QString {
-        let flake = flake_path.to_string();
-        let msg = commit_msg.to_string();
-        let prune_mode = GenerationPruneMode::from_str(&generation_prune_mode.to_string());
-        let prune_value = generation_prune_value.max(1);
+    /// Build the full pkexec update command string from the current updates and settings
+    pub fn build_update_command(&self) -> QString {
+        let flake = self.flake_path().to_string();
+        let nix_updates = updates_from_json(&self.updates_json().to_string());
+        let msg = flake_checker::generate_commit_message(&nix_updates);
+        let flatpaks = if *self.include_flatpak() {
+            flatpaks_from_json(&self.flatpak_updates_json().to_string())
+        } else {
+            Vec::new()
+        };
+        // Only the parts with something to do. With nothing known (no check
+        // yet), do the system, as before.
+        let update_system = !nix_updates.is_empty() || flatpaks.is_empty();
+        let prune_mode = GenerationPruneMode::from_str(&self.generation_prune_mode().to_string());
+        let prune_value = (*self.generation_prune_value()).max(1);
+        let flag = |on: bool| shell_quote(if on { "1" } else { "0" });
 
         let script_path = update_script_path();
 
@@ -758,20 +980,120 @@ impl qobject::UpdateChecker {
         let ssh_auth_sock = current_ssh_auth_sock(uid);
 
         let cmd = format!(
-            "pkexec env FLAKE_PATH={} COMMIT_MSG={} SSH_AUTH_SOCK={} ORIGINAL_UID={} COMMIT_AND_PUSH={} RUN_GC={} PRUNE_GENERATIONS={} GENERATION_PRUNE_MODE={} GENERATION_PRUNE_VALUE={} {}",
+            "pkexec env FLAKE_PATH={} COMMIT_MSG={} SSH_AUTH_SOCK={} ORIGINAL_UID={} UPDATE_SYSTEM={} FLATPAK_SYSTEM={} FLATPAK_USER={} COMMIT_AND_PUSH={} RUN_GC={} PRUNE_GENERATIONS={} GENERATION_PRUNE_MODE={} GENERATION_PRUNE_VALUE={} {}",
             shell_quote(&flake),
             shell_quote(&msg),
             shell_quote(&ssh_auth_sock),
             shell_quote(&uid.to_string()),
-            shell_quote(if commit_and_push { "1" } else { "0" }),
-            shell_quote(if run_gc { "1" } else { "0" }),
-            shell_quote(if prune_generations { "1" } else { "0" }),
+            flag(update_system),
+            flag(flatpak::has_system_updates(&flatpaks)),
+            flag(flatpak::has_user_updates(&flatpaks)),
+            flag(*self.commit_and_push()),
+            flag(*self.run_gc_after_update()),
+            flag(*self.prune_generations()),
             shell_quote(prune_mode.as_str()),
             shell_quote(&prune_value.to_string()),
             shell_quote(&script_path),
         );
 
         QString::from(&cmd)
+    }
+
+    pub fn maybe_notify(mut self: Pin<&mut Self>) {
+        if !*self.as_ref().notify_updates()
+            || !*self.as_ref().has_updates()
+            || *self.as_ref().update_running()
+            || *self.as_ref().notification_pending()
+        {
+            return;
+        }
+        let Ok(mut config) = Config::load() else { return };
+        let now = chrono::Utc::now().timestamp();
+        if config.snooze_until > now {
+            return;
+        }
+        let nix = updates_from_json(&self.as_ref().updates_json().to_string());
+        let flatpaks = flatpaks_from_json(&self.as_ref().flatpak_updates_json().to_string());
+        let signature = update_signature(&nix, &flatpaks);
+        let snooze_ran_out = config.snooze_until > 0;
+        if !snooze_ran_out && signature == config.last_notified_signature {
+            return;
+        }
+        config.snooze_until = 0;
+        config.last_notified_signature = signature;
+        let _ = config.save();
+        self.as_mut().set_snooze_text(QString::from(""));
+
+        let body = format!(
+            "{} {} ready to install. Install now, or later?",
+            describe_updates(nix.len(), &self.as_ref().download_size().to_string(), &flatpaks),
+            if nix.len() + flatpaks.len() == 1 { "is" } else { "are" },
+        );
+        self.as_mut().set_notification_pending(true);
+        if let Ok(mut answer) = NOTIFY_ANSWER.lock() {
+            *answer = None;
+        }
+        // notify-send blocks until the notification is answered or closed:
+        // off the UI thread, with the answer picked up by poll_notification.
+        std::thread::spawn(move || {
+            let output = std::process::Command::new("notify-send")
+                .args([
+                    "--app-name=Software Update",
+                    &format!("--icon={}", notification_icon()),
+                    "--expire-time=0",
+                    "--hint=string:desktop-entry:nixos-update-checker",
+                    "--action=default=Details",
+                    "--action=install=Install Now",
+                    "--action=hour=In an Hour",
+                    "--action=tonight=Tonight",
+                    "--action=tomorrow=Tomorrow",
+                    "--wait",
+                    "Updates Available",
+                    &body,
+                ])
+                .output();
+            let answer = match output {
+                Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                Err(e) => {
+                    eprintln!("notify-send failed: {e}");
+                    "error".to_string()
+                }
+            };
+            if let Ok(mut stored) = NOTIFY_ANSWER.lock() {
+                *stored = Some(answer);
+            }
+        });
+    }
+
+    pub fn poll_notification(mut self: Pin<&mut Self>) -> QString {
+        let Some(answer) = NOTIFY_ANSWER.lock().ok().and_then(|mut a| a.take()) else {
+            return QString::from("");
+        };
+        self.as_mut().set_notification_pending(false);
+        match answer.as_str() {
+            "install" => QString::from("install"),
+            "default" => QString::from("details"),
+            "hour" | "tonight" | "tomorrow" => {
+                self.as_mut().snooze(QString::from(&answer));
+                QString::from("later")
+            }
+            // notify-send missing or failed: nothing to put off.
+            "error" => QString::from(""),
+            // Closed without an answer: like macOS, ask again tomorrow.
+            _ => {
+                self.as_mut().snooze(QString::from("tomorrow"));
+                QString::from("later")
+            }
+        }
+    }
+
+    pub fn snooze(mut self: Pin<&mut Self>, kind: QString) {
+        let until = snooze_target(&kind.to_string());
+        if let Ok(mut config) = Config::load() {
+            config.snooze_until = until;
+            let _ = config.save();
+        }
+        self.as_mut().set_snooze_text(QString::from(&describe_snooze(until)));
     }
 
     /// Reboot the system using loginctl (works without root via polkit)

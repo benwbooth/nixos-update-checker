@@ -12,6 +12,11 @@ fi
 # Track if any step fails
 FAILED=0
 
+# Which parts to update (older GUIs set neither: update the system only).
+UPDATE_SYSTEM="${UPDATE_SYSTEM:-1}"
+FLATPAK_SYSTEM="${FLATPAK_SYSTEM:-0}"
+FLATPAK_USER="${FLATPAK_USER:-0}"
+
 find_ssh_agent_socket() {
     if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ]; then
         return
@@ -74,7 +79,7 @@ CYAN=$'\033[0;36m'
 NC=$'\033[0m'
 
 echo "${BOLD}${CYAN}╔══════════════════════════════════════╗${NC}"
-echo "${BOLD}${CYAN}║       NixOS Flake Update             ║${NC}"
+echo "${BOLD}${CYAN}║           Software Update            ║${NC}"
 echo "${BOLD}${CYAN}╚══════════════════════════════════════╝${NC}"
 echo ""
 
@@ -98,6 +103,40 @@ echo ""
 # Add flake path to git safe directories (needed even as root in newer git)
 git config --global --add safe.directory "$FLAKE_PATH"
 
+update_flatpaks() {
+    if [ "$FLATPAK_SYSTEM" = "1" ]; then
+        echo "${BOLD}${GREEN}━━━ Updating Flatpak apps (system) ━━━${NC}"
+        if ! flatpak update --system --noninteractive -y; then
+            echo "${RED}Failed to update system Flatpak apps${NC}"
+            FAILED=1
+        fi
+        echo ""
+    fi
+    if [ "$FLATPAK_USER" = "1" ]; then
+        echo "${BOLD}${GREEN}━━━ Updating Flatpak apps (user) ━━━${NC}"
+        # The user's own installation lives in their home: run as them.
+        FLATPAK_USER_NAME=$(getent passwd "${ORIGINAL_UID:-${PKEXEC_UID:-}}" | cut -d: -f1)
+        FLATPAK_USER_HOME=$(getent passwd "${ORIGINAL_UID:-${PKEXEC_UID:-}}" | cut -d: -f6)
+        if [ -z "$FLATPAK_USER_NAME" ]; then
+            echo "${YELLOW}Could not tell which user to update Flatpak apps for; skipping${NC}"
+        elif ! runuser -u "$FLATPAK_USER_NAME" -- env HOME="$FLATPAK_USER_HOME" \
+                XDG_RUNTIME_DIR="/run/user/${ORIGINAL_UID:-${PKEXEC_UID:-}}" \
+                flatpak update --user --noninteractive -y; then
+            echo "${RED}Failed to update user Flatpak apps${NC}"
+            FAILED=1
+        fi
+        echo ""
+    fi
+}
+
+if [ "$UPDATE_SYSTEM" != "1" ]; then
+    echo "${YELLOW}NixOS is up to date; updating Flatpak apps only${NC}"
+    echo ""
+    update_flatpaks
+    COMMIT_AND_PUSH=0
+    SKIP_SYSTEM_MSG=1
+else
+
 echo "${BOLD}${YELLOW}━━━ Updating flake inputs ━━━${NC}"
 if ! as_owner env NIX_CONFIG='extra-experimental-features = nix-command flakes' nix flake update; then
     echo "${RED}Failed to update flake inputs${NC}"
@@ -111,6 +150,9 @@ if ! nixos-rebuild switch --flake .; then
     FAILED=1
 fi
 echo ""
+
+update_flatpaks
+fi
 
 if [ "$COMMIT_AND_PUSH" = "1" ]; then
     echo "${BOLD}${BLUE}━━━ Committing changes ━━━${NC}"
@@ -143,7 +185,7 @@ if [ "$COMMIT_AND_PUSH" = "1" ]; then
     fi
     as_owner git push \
         || echo "${YELLOW}Push failed or no remote configured${NC}"
-else
+elif [ -z "$SKIP_SYSTEM_MSG" ]; then
     echo "${YELLOW}Skipping commit and push (disabled in settings)${NC}"
 fi
 echo ""

@@ -1,5 +1,7 @@
 mod config;
 mod flake_checker;
+mod flatpak;
+mod release;
 mod tray;
 
 use cxx_qt_lib::{QQmlApplicationEngine, QUrl};

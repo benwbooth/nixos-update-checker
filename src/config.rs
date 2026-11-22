@@ -107,6 +107,28 @@ pub struct Config {
     /// Cached unpacked size from last check (e.g. "1500.00 MiB")
     #[serde(default)]
     pub cached_unpacked_size: String,
+    /// Check and install Flatpak updates (system and user installations)
+    #[serde(default = "default_true")]
+    pub include_flatpak: bool,
+    /// Pending Flatpak updates from the last check (JSON array)
+    #[serde(default)]
+    pub cached_flatpak_json: String,
+    /// Post an "Updates Available" notification (Install Now / Later)
+    #[serde(default = "default_true")]
+    pub notify_updates: bool,
+    /// "Later" was picked: no reminder before this Unix time (0 = none)
+    #[serde(default)]
+    pub snooze_until: i64,
+    /// The update set the last notification was about, so the same updates
+    /// aren't announced again on every check
+    #[serde(default)]
+    pub last_notified_signature: String,
+    /// A newer NixOS release than the flake follows ("26.11"), from the last check
+    #[serde(default)]
+    pub new_release: String,
+    /// The release the last "new release" notification was about
+    #[serde(default)]
+    pub release_notified: String,
 }
 
 fn default_true() -> bool { true }
@@ -128,6 +150,13 @@ impl Default for Config {
             generation_prune_value: default_generation_prune_value(),
             cached_download_size: String::new(),
             cached_unpacked_size: String::new(),
+            include_flatpak: true,
+            cached_flatpak_json: String::new(),
+            notify_updates: true,
+            snooze_until: 0,
+            last_notified_signature: String::new(),
+            new_release: String::new(),
+            release_notified: String::new(),
         }
     }
 }
@@ -243,6 +272,7 @@ mod tests {
             cached_updates_json: String::new(),
             cached_download_size: String::new(),
             cached_unpacked_size: String::new(),
+            ..Config::default()
         };
 
         let toml_str = toml::to_string(&config).unwrap();
