@@ -37,6 +37,15 @@ ApplicationWindow {
     property string lastLine: ""  // Last non-empty line from terminal output
     property string rebootPackages: ""
     property int page: 0  // 0 = Software Update, 1 = Automatic Updates sheet
+    // The description pane shows the last check's full log.
+    property bool logShown: false
+    TextEdit { id: clipboardHelper; visible: false }
+    function copyText(t) {
+        clipboardHelper.text = t
+        clipboardHelper.selectAll()
+        clipboardHelper.copy()
+        clipboardHelper.text = ""
+    }
     onOutputExpandedChanged: if (outputExpanded) terminal.focusTerminal()
 
     // --- look (hearth's Theme, from the system palette) ---
@@ -378,6 +387,53 @@ ApplicationWindow {
         }
     }
 
+    // The last check's failure: a short title, the part of nix's output that
+    // says what went wrong (selectable), and the full log, copy and retry.
+    component ErrorBox: Rectangle {
+        visible: checker.error_summary !== "" && root.phase !== "checking"
+        implicitHeight: errCol.implicitHeight + 24
+        radius: 10
+        color: Qt.rgba(theme.bad.r, theme.bad.g, theme.bad.b, theme.dark ? 0.12 : 0.08)
+        border.color: Qt.rgba(theme.bad.r, theme.bad.g, theme.bad.b, 0.35)
+        ColumnLayout {
+            id: errCol
+            x: 12
+            y: 12
+            width: parent.width - 24
+            spacing: 8
+            Text_ {
+                Layout.fillWidth: true
+                font.weight: Font.DemiBold
+                color: theme.bad
+                text: root.nixUpdates.length > 0
+                    ? "The last check failed, so this list may be out of date"
+                    : "Couldn’t check for NixOS updates"
+            }
+            TextEdit {
+                Layout.fillWidth: true
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
+                renderType: Text.NativeRendering
+                color: theme.fg
+                selectionColor: theme.accent
+                font.family: theme.mono
+                font.pointSize: theme.smallSize
+                text: checker.error_summary
+            }
+            RowLayout {
+                spacing: 8
+                GlassButton { text: "Show Full Log"; onClicked: root.logShown = true }
+                GlassButton { text: "Copy Error"; onClicked: root.copyText(checker.error_log || checker.error_summary) }
+                GlassButton {
+                    text: "Check Again"
+                    enabled: !checker.checking && !terminal.running
+                    onClicked: checker.check_now()
+                }
+            }
+        }
+    }
+
     // A rounded tile holding a glyph, like the app icons in macOS lists.
     component IconTile: Rectangle {
         property alias source: img.source
@@ -649,6 +705,7 @@ ApplicationWindow {
                 trayIcon.icon.source = checker.get_icon_path()
             }
             if (checker.checking) {
+                root.logShown = false
                 root.lastLine = ""
                 checker.update_status_line = ""
             }
@@ -880,7 +937,8 @@ ApplicationWindow {
             { id: "select-updates", text: "Select All Updates", enabled: root.phase === "available" },
             { id: "deselect-updates", text: "Deselect All Updates", enabled: root.phase === "available" } ] },
         { title: "View", items: [
-            { id: "details", text: root.outputExpanded ? "Hide Details" : "Show Details" } ] },
+            { id: "details", text: root.outputExpanded ? "Hide Details" : "Show Details" },
+            { id: "check-log", text: "Show Last Check’s Log", enabled: checker.error_log !== "" } ] },
         { title: "Help", items: [
             { id: "release-notes", text: "NixOS Release Notes" },
             { id: "upgrading", text: "Upgrading NixOS" },
@@ -903,6 +961,7 @@ ApplicationWindow {
         case "select-updates": root.setAllChecked(true); break
         case "deselect-updates": root.setAllChecked(false); break
         case "details": root.outputExpanded = !root.outputExpanded; break
+        case "check-log": root.outputExpanded = false; root.logShown = true; break
         case "release-notes": Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/release-notes"); break
         case "upgrading": Qt.openUrlExternally("https://nixos.org/manual/nixos/stable/#sec-upgrading"); break
         case "flathub": Qt.openUrlExternally("https://flathub.org"); break
@@ -979,6 +1038,7 @@ ApplicationWindow {
         : updateJustCompleted ? "done"
         : checker.checking && !checker.has_updates ? "checking"
         : checker.has_updates ? "available"
+        : checker.error_summary ? "error"
         : "current"
 
     // --- the update table ---
@@ -1104,7 +1164,7 @@ ApplicationWindow {
                         width: Math.max(22, badgeText.implicitWidth + 12)
                         height: 22
                         radius: 11
-                        color: root.phase === "available" || root.phase === "failed" ? theme.bad
+                        color: root.phase === "available" || root.phase === "failed" || root.phase === "error" ? theme.bad
                              : root.phase === "restart" ? theme.warn : theme.good
                         border.color: theme.dark ? "#1e1f22" : "#ffffff"
                         border.width: 2
@@ -1115,7 +1175,7 @@ ApplicationWindow {
                             font.weight: Font.Bold
                             font.pointSize: 8.5
                             text: root.phase === "available" ? checker.total_count
-                                : root.phase === "failed" ? "!"
+                                : root.phase === "failed" || root.phase === "error" ? "!"
                                 : root.phase === "restart" ? "↻" : "✓"
                         }
                     }
@@ -1137,6 +1197,7 @@ ApplicationWindow {
                             case "done": return "Your software is up to date."
                             case "checking": return "Checking for new software…"
                             case "available": return "New software is available."
+                            case "error": return "Couldn’t check for updates."
                             default: return "Your software is up to date."
                             }
                         }
@@ -1154,6 +1215,7 @@ ApplicationWindow {
                             case "done": return "Updates were installed. " + checker.system_version
                             case "checking": return "Looking at " + checker.flake_path + (checker.include_flatpak ? " and Flatpak apps" : "")
                             case "available": return "Select the items you want, then click Install."
+                            case "error": return checker.error_summary.split("\n")[0]
                             default: return checker.system_version + (checker.last_check_time ? " · checked " + checker.last_check_time : "")
                             }
                         }
@@ -1343,7 +1405,7 @@ ApplicationWindow {
                         spacing: 4
                         Text_ {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: root.phase === "checking" ? "Checking…" : "No updates available"
+                            text: root.phase === "checking" ? "Checking…" : root.phase === "error" ? "Couldn’t check for updates" : "No updates available"
                             color: theme.fgDim
                             font.pointSize: theme.fontSize + 1
                         }
@@ -1385,11 +1447,44 @@ ApplicationWindow {
                         }
                     }
 
+                    // The last check's full log
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 16
+                        visible: root.logShown && !root.outputExpanded
+                        spacing: 10
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Text_ { text: "Check Log"; font.weight: Font.DemiBold; font.pointSize: theme.fontSize + 1; Layout.fillWidth: true }
+                            GlassButton { text: "Copy"; onClicked: root.copyText(checker.error_log) }
+                            GlassButton { text: "Done"; primary: true; onClicked: root.logShown = false }
+                        }
+                        ScrollView {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            TextArea {
+                                readOnly: true
+                                selectByMouse: true
+                                wrapMode: TextEdit.Wrap
+                                renderType: Text.NativeRendering
+                                font.family: theme.mono
+                                font.pointSize: theme.smallSize - 0.5
+                                color: theme.fg
+                                text: checker.error_log
+                                background: Rectangle { radius: 8; color: theme.dark ? Qt.rgba(0, 0, 0, 0.25) : Qt.rgba(0, 0, 0, 0.04) }
+                                // Nix puts the error last: open at the end.
+                                onVisibleChanged: if (visible) cursorPosition = length
+                            }
+                        }
+                    }
+
                     ScrollView {
                         id: descScroll
                         anchors.fill: parent
                         anchors.margins: 16
-                        visible: !root.outputExpanded
+                        visible: !root.outputExpanded && !root.logShown
                         contentWidth: availableWidth
                         clip: true
 
@@ -1397,6 +1492,9 @@ ApplicationWindow {
                             width: descScroll.availableWidth
                             spacing: 8
                             readonly property var row: root.selectedRow
+
+                            // The last check's failure, above whatever row is selected.
+                            ErrorBox { Layout.fillWidth: true; Layout.bottomMargin: 6 }
 
                             // Nothing to install: the system as it is.
                             ColumnLayout {
@@ -1413,15 +1511,6 @@ ApplicationWindow {
                                         + (checker.include_flatpak ? " and from Flatpak (your apps and system-wide ones)." : ".")
                                         + " Checks run " + root.intervalText()
                                         + (checker.notify_updates ? ", and a notification asks before anything is installed." : ".")
-                                }
-                                Text_ {
-                                    Layout.fillWidth: true
-                                    visible: checker.status_message.startsWith("Error")
-                                    wrapMode: Text.Wrap
-                                    maximumLineCount: 3
-                                    elide: Text.ElideRight
-                                    color: theme.bad
-                                    text: checker.status_message
                                 }
                             }
 
@@ -1440,15 +1529,6 @@ ApplicationWindow {
                                         + (root.sizeText() ? " (" + root.sizeText() + ")" : "") + ". Updates the inputs of "
                                         + checker.flake_path + " and rebuilds the system"
                                         + (checker.commit_and_push ? ", then commits and pushes flake.lock." : ".")
-                                }
-                                Text_ {
-                                    Layout.fillWidth: true
-                                    visible: checker.status_message.startsWith("Error")
-                                    wrapMode: Text.Wrap
-                                    maximumLineCount: 3
-                                    elide: Text.ElideRight
-                                    color: theme.bad
-                                    text: checker.status_message
                                 }
                                 Repeater {
                                     model: parent.visible ? root.nixUpdates : []

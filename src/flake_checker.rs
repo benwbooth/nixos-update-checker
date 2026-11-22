@@ -15,6 +15,140 @@ pub enum FlakeCheckError {
     NixError(String),
     #[error("Not a git repository: {0}")]
     NotGitRepo(String),
+    /// The system didn't evaluate or build: what went wrong in a few lines,
+    /// and everything nix printed.
+    #[error("{summary}")]
+    BuildFailed { summary: String, log: String },
+}
+
+impl FlakeCheckError {
+    /// Everything there is to show for this error (the full nix output for
+    /// a failed build).
+    pub fn full_log(&self) -> String {
+        match self {
+            FlakeCheckError::BuildFailed { log, .. } => log.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
+/// "/nix/store/<hash>-hearth-0.1.0/share/x" -> "/nix/store/…-hearth-0.1.0/share/x".
+fn shorten_store_paths(s: &str) -> String {
+    Regex::new(r"/nix/store/[0-9a-z]{32}-")
+        .unwrap()
+        .replace_all(s, "/nix/store/…-")
+        .into_owned()
+}
+
+/// A flake source file as the flake sees it: "/nix/store/<hash>-source/home/x.nix"
+/// -> "home/x.nix" (other store paths shortened).
+fn flake_relative(path: &str) -> String {
+    match Regex::new(r"^/nix/store/[0-9a-z]{32}-source/(.+)$").unwrap().captures(path) {
+        Some(c) => c[1].to_string(),
+        None => shorten_store_paths(path),
+    }
+}
+
+/// The part of a failed `nixos-rebuild dry-build` worth reading: nix prints
+/// progress first and the error last, and the error itself has a trace of
+/// "… while evaluating" frames above the real message.
+///
+/// - A failed build: which derivation, its exit code, the last lines of its
+///   log and the `nix log` command for the rest.
+/// - An evaluation error: the innermost `error:` message and where it is.
+/// - Anything else: the last lines.
+pub fn summarize_nix_error(output: &str) -> String {
+    let ansi = Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").unwrap();
+    let text = ansi.replace_all(output, "");
+    let lines: Vec<&str> = text.lines().collect();
+
+    // A builder failed.
+    let builder = Regex::new(r"builder for '(/nix/store/[^']+\.drv)' failed with exit code (\d+)").unwrap();
+    if let Some((idx, caps)) = lines.iter().enumerate().find_map(|(i, l)| builder.captures(l).map(|c| (i, c))) {
+        let drv = caps[1].to_string();
+        let name = drv
+            .rsplit('/')
+            .next()
+            .and_then(|f| f.split_once('-').map(|(_, n)| n.trim_end_matches(".drv").to_string()))
+            .unwrap_or_else(|| drv.clone());
+        let mut out = vec![format!("Building {name} failed (exit code {}).", &caps[2])];
+        // Its log tail: the "> " lines that follow.
+        let tail: Vec<String> = lines[idx + 1..]
+            .iter()
+            .map(|l| l.trim_start())
+            .take_while(|l| l.starts_with('>') || l.starts_with("last ") || l.is_empty())
+            .filter_map(|l| l.strip_prefix('>').map(|t| t.trim_end().strip_prefix(' ').unwrap_or(t.trim_end()).to_string()))
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        let start = tail.len().saturating_sub(12);
+        if !tail.is_empty() {
+            out.push(String::new());
+            out.extend(tail[start..].iter().cloned());
+        }
+        out.push(String::new());
+        out.push(format!("Full build log: nix log {drv}"));
+        return out.join("\n");
+    }
+
+    // An evaluation error: the last "error:" line with text after it (the
+    // trace's frames come first, the cause last), plus its "at file:line".
+    let error_line = Regex::new(r"^\s*error:\s*(.+)$").unwrap();
+    let mut found: Option<(usize, String)> = None;
+    for (i, l) in lines.iter().enumerate() {
+        if let Some(c) = error_line.captures(l) {
+            let msg = c[1].trim().to_string();
+            // Generic follow-ups that name no cause.
+            if msg.contains("dependencies of derivation") || msg.starts_with("Recipe") {
+                continue;
+            }
+            found = Some((i, msg));
+        }
+    }
+    if let Some((i, msg)) = found {
+        let mut out = vec![shorten_store_paths(&msg)];
+        // The message may go on over indented lines, then "at path:line:col:".
+        for l in lines[i + 1..].iter().take(8) {
+            let t = l.trim();
+            // Continuations are indented; nixos-rebuild's own "Command ...
+            // returned non-zero exit status" line is not.
+            if t.is_empty() || t.starts_with("error:") || t.starts_with('…') || !l.starts_with(char::is_whitespace) {
+                break;
+            }
+            out.push(shorten_store_paths(t));
+            if t.starts_with("at ") {
+                break;
+            }
+        }
+        // Where in the configuration: the innermost option being evaluated
+        // and the file defining it (the trace's last frames before the error).
+        let option = Regex::new(r"… while evaluating the option `(.+)':").unwrap();
+        let defs = Regex::new(r"… while evaluating definitions from `(.+)':").unwrap();
+        let last_option = lines[..i].iter().rev().find_map(|l| option.captures(l).map(|c| c[1].to_string()));
+        let last_defs = lines[..i].iter().rev().find_map(|l| defs.captures(l).map(|c| c[1].to_string()));
+        match (last_defs, last_option) {
+            (Some(file), Some(opt)) => out.push(format!("\nIn {}, option {}", flake_relative(&file), opt)),
+            (None, Some(opt)) => out.push(format!("\nIn option {opt}")),
+            (Some(file), None) => out.push(format!("\nIn {}", flake_relative(&file))),
+            (None, None) => {}
+        }
+        return out.join("\n");
+    }
+
+    // Nothing recognisable: the last few non-progress lines.
+    let interesting: Vec<&str> = lines
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| {
+            !l.is_empty()
+                && !l.starts_with("building '")
+                && !l.starts_with("copying path")
+                && !l.starts_with("these ")
+                && !l.starts_with("building the system configuration")
+                && !l.starts_with("/nix/store/")
+        })
+        .collect();
+    let start = interesting.len().saturating_sub(6);
+    interesting[start..].join("\n")
 }
 
 /// Represents a package that would be updated
@@ -358,10 +492,10 @@ pub async fn check_for_updates(flake_path: &Path) -> Result<CheckResult, FlakeCh
     eprintln!("nixos-rebuild dry-build output:\n{}", combined);
 
     if !dry_build.status.success() {
-        return Err(FlakeCheckError::NixError(format!(
-            "nixos-rebuild dry-build failed: {}",
-            stderr.lines().take(5).collect::<Vec<_>>().join("\n")
-        )));
+        return Err(FlakeCheckError::BuildFailed {
+            summary: summarize_nix_error(&stderr),
+            log: combined.trim().to_string(),
+        });
     }
 
     // Get current system packages to compare hashes
@@ -810,6 +944,71 @@ pub fn format_updates_tooltip(updates: &[FlakeUpdate], download_size: &str, unpa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summarizes_builder_failure() {
+        let out = "building the system configuration...\n\
+building '/nix/store/hd725qklpbjz8rmiiqhqappk3smmav2i-hearth-0.1.0.drv'...\n\
+error: builder for '/nix/store/hd725qklpbjz8rmiiqhqappk3smmav2i-hearth-0.1.0.drv' failed with exit code 1;\n\
+       last 4 log lines:\n\
+       > Running phase: buildPhase\n\
+       > qmllint: error\n\
+       > shell/bar/Dock.qml:95: Unknown property\n\
+       > make: *** [all] Error 1\n\
+       For full logs, run:\n\
+         nix log /nix/store/hd725qklpbjz8rmiiqhqappk3smmav2i-hearth-0.1.0.drv\n\
+error: 1 dependencies of derivation '/nix/store/x-system-path.drv' failed to build\n";
+        let s = summarize_nix_error(out);
+        assert!(s.starts_with("Building hearth-0.1.0 failed (exit code 1)."), "{s}");
+        assert!(s.contains("shell/bar/Dock.qml:95: Unknown property"), "{s}");
+        assert!(s.contains("make: *** [all] Error 1"), "{s}");
+        assert!(s.ends_with("nix log /nix/store/hd725qklpbjz8rmiiqhqappk3smmav2i-hearth-0.1.0.drv"), "{s}");
+    }
+
+    #[test]
+    fn summarizes_real_eval_error() {
+        // Trimmed from a real `nixos-rebuild dry-build` (hearth dropped a
+        // file the configuration still read).
+        let out = "building the system configuration...\n\
+error:\n\
+       … while calling the 'head' builtin\n\
+         at «github:NixOS/nixpkgs/94c3211b0ee8»/lib/attrsets.nix:1716:13:\n\
+         1716|             head values\n\
+\n\
+       … while evaluating the option `system.build.toplevel':\n\
+\n\
+       … while evaluating definitions from `/nix/store/xlrw45lm20rg3yxk2xh9cmyahd6qavp2-source/modules/misc/xdg.nix':\n\
+\n\
+       … while evaluating the option `home-manager.users.ben.xdg.configFile.\"swaync/style.css\".text':\n\
+\n\
+       … while evaluating definitions from `/nix/store/66vp2dh73g79cpjjhvxd9akymypwk2xf-source/home/desktop.nix':\n\
+\n\
+       (stack trace truncated; use '--show-trace' to show the full, detailed trace)\n\
+\n\
+       error: opening file '/nix/store/1f14pc902lyrzh10pljr1xafv2b1priz-hearth-0.1.0/share/hearth/swaync/breeze.css': No such file or directory\n\
+Command 'nix --extra-experimental-features 'nix-command flakes' build --print-out-paths '.#nixosConfigurations.\"nixos\".config.system.build.toplevel' --dry-run' returned non-zero exit status 1.\n";
+        let s = summarize_nix_error(out);
+        assert_eq!(
+            s,
+            "opening file '/nix/store/…-hearth-0.1.0/share/hearth/swaync/breeze.css': No such file or directory\n\
+\nIn home/desktop.nix, option home-manager.users.ben.xdg.configFile.\"swaync/style.css\".text"
+        );
+    }
+
+    #[test]
+    fn summarizes_eval_error() {
+        let out = "building the system configuration...\n\
+error:\n\
+       … while calling the 'derivationStrict' builtin\n\
+         at <nix/derivation-internal.nix>:37:12:\n\
+\n\
+       … while evaluating the option `environment.systemPackages':\n\
+\n\
+       error: attribute 'fooBar' missing\n       at /nix/store/abc-source/flake.nix:120:9:\n\
+          119|\n";
+        let s = summarize_nix_error(out);
+        assert_eq!(s, "attribute 'fooBar' missing\nat /nix/store/abc-source/flake.nix:120:9:\n\nIn option environment.systemPackages");
+    }
 
     #[test]
     fn test_is_internal_package() {

@@ -48,6 +48,10 @@ pub mod qobject {
         #[qproperty(QString, snooze_text)]
         // "NixOS 26.05 (Yarara)"
         #[qproperty(QString, system_version)]
+        // The last check's failure, if it failed: what went wrong in a few
+        // lines, and everything nix printed
+        #[qproperty(QString, error_summary)]
+        #[qproperty(QString, error_log)]
         // A newer major NixOS release than the flake follows ("26.11"), else ""
         #[qproperty(QString, new_release)]
         // The release the flake follows ("26.05")
@@ -340,6 +344,8 @@ pub struct UpdateCheckerRust {
     snooze_text: QString,
     system_version: QString,
     new_release: QString,
+    error_summary: QString,
+    error_log: QString,
     followed_release: QString,
     // Internal: cached config for is_check_due
     #[allow(dead_code)]
@@ -598,6 +604,8 @@ impl qobject::UpdateChecker {
                     self.as_mut().set_download_size(QString::from(&check_result.download_size));
                     self.as_mut().set_unpacked_size(QString::from(&check_result.unpacked_size));
                     self.as_mut().set_status_message(QString::from("Check complete"));
+                    self.as_mut().set_error_summary(QString::from(""));
+                    self.as_mut().set_error_log(QString::from(""));
 
                     // Save to config for persistence
                     if let Ok(mut config) = Config::load() {
@@ -610,6 +618,8 @@ impl qobject::UpdateChecker {
                 }
                 Err(e) => {
                     self.as_mut().set_status_message(QString::from(&format!("Error: {}", e)));
+                    self.as_mut().set_error_summary(QString::from(&e.to_string()));
+                    self.as_mut().set_error_log(QString::from(&e.full_log()));
                     let tooltip = QString::from(&format!(
                         "Software Update\nCheck failed\nLast checked: {}",
                         format_relative_time(check_timestamp)
