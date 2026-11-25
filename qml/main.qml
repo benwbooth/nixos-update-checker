@@ -979,45 +979,17 @@ ApplicationWindow {
     onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
 
     // The hamburger's menu: the same model, flattened (one group per menu,
-    // submenus kept), rebuilt each time it opens so it shows the current
-    // texts and states.
-    Menu { id: hamburgerMenu }
-    Component { id: hamburgerItem; MenuItem { property string actionId; onTriggered: root.menuAction(actionId) } }
-    Component { id: hamburgerSeparator; MenuSeparator {} }
-    Component { id: hamburgerSubmenu; Menu {} }
-    property var hamburgerObjects: []
-    function fillMenu(menu, items) {
-        for (var i = 0; i < items.length; i++) {
-            var it = items[i]
-            var obj
-            if (it.separator) {
-                obj = hamburgerSeparator.createObject(null)
-                menu.addItem(obj)
-            } else if (it.items) {
-                obj = hamburgerSubmenu.createObject(null, { title: it.text, enabled: it.enabled !== false })
-                fillMenu(obj, it.items)
-                menu.addMenu(obj)
-            } else {
-                obj = hamburgerItem.createObject(null, { text: it.text, actionId: it.id, enabled: it.enabled !== false })
-                menu.addItem(obj)
-            }
-            hamburgerObjects.push(obj)
-        }
+    // submenus kept), in the shared macOS 26 menu look (AppMenu/MacMenu from
+    // hearth/shared/app-menus, as Ben's other apps).
+    AppMenu {
+        id: hamburgerMenu
+        model: root.menuModel
+        flat: true
+        dark: theme.dark
+        accent: theme.accent
+        onTriggered: id => root.menuAction(id)
     }
-    function openHamburger(button) {
-        while (hamburgerMenu.count > 0) hamburgerMenu.takeItem(0)
-        for (var i = 0; i < hamburgerObjects.length; i++) hamburgerObjects[i].destroy()
-        hamburgerObjects = []
-        for (var m = 0; m < menuModel.length; m++) {
-            if (m > 0) {
-                var sep = hamburgerSeparator.createObject(null)
-                hamburgerMenu.addItem(sep)
-                hamburgerObjects.push(sep)
-            }
-            fillMenu(hamburgerMenu, menuModel[m].items)
-        }
-        hamburgerMenu.popup(button, button.width - hamburgerMenu.implicitWidth, button.height + 4)
-    }
+    function openHamburger(button) { hamburgerMenu.openBelow(button) }
 
     background: Rectangle {
         color: theme.bg
