@@ -1218,29 +1218,12 @@ ApplicationWindow {
                 }
 
                 // The menus (also in the desktop's global menu bar).
-                MouseArea {
+                MacMenuButton {
                     id: hamburger
                     Layout.alignment: Qt.AlignTop
-                    implicitWidth: 32
-                    implicitHeight: 32
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.openHamburger(hamburger)
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: height / 2
-                        color: hamburger.pressed || hamburgerMenu.visible ? theme.controlHover
-                             : hamburger.containsMouse ? theme.control : "transparent"
-                        border.color: hamburger.containsMouse || hamburgerMenu.visible ? theme.rim : "transparent"
-                    }
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 3
-                        Repeater {
-                            model: 3
-                            Rectangle { width: 14; height: 1.6; radius: 0.8; color: theme.fg }
-                        }
-                    }
+                    dark: theme.dark
+                    fg: theme.fg
+                    menu: hamburgerMenu
                 }
             }
 

@@ -216,7 +216,7 @@ fn main() {
         .qml_module(QmlModule {
             uri: "NixosUpdateChecker",
             rust_files: &["src/tray.rs"],
-            qml_files: &["qml/main.qml", "qml/AppMenu.qml", "qml/MacComboBox.qml", "qml/MacComboItem.qml", "qml/MacComboPopup.qml", "qml/MacMenuBackground.qml", "qml/MacMenuIcon.qml", "qml/MacMenuItem.qml", "qml/MacMenu.qml", "qml/MacMenuSeparator.qml", "qml/MacMenuStyle.qml", "qml/ChromeButtons.qml", "qml/ChromeResizeEdges.qml", "qml/ChromeTitleArea.qml"],
+            qml_files: &["qml/main.qml", "qml/AppMenu.qml", "qml/MacComboBox.qml", "qml/MacComboItem.qml", "qml/MacComboPopup.qml", "qml/MacMenuBackground.qml", "qml/MacMenuIcon.qml", "qml/MacMenuItem.qml", "qml/MacMenu.qml", "qml/MacMenuButton.qml", "qml/MacMenuSeparator.qml", "qml/MacMenuStyle.qml", "qml/ChromeButtons.qml", "qml/ChromeResizeEdges.qml", "qml/ChromeTitleArea.qml"],
             ..Default::default()
         })
         .qrc("resources/resources.qrc")
