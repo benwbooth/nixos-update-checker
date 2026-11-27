@@ -63,6 +63,13 @@ fn try_acquire_lock() -> Option<File> {
 }
 
 fn main() {
+    // `nixos-update-checker apps …`: the apps manifest commands (nix-apps),
+    // which the update script runs to pin new AppImage releases. No Qt.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("apps") {
+        std::process::exit(nix_apps::cli::run(args[2..].to_vec()));
+    }
+
     // Ensure only one instance is running
     let _lock = match try_acquire_lock() {
         Some(lock) => lock,

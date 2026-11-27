@@ -113,6 +113,9 @@ pub struct Config {
     /// Pending Flatpak updates from the last check (JSON array)
     #[serde(default)]
     pub cached_flatpak_json: String,
+    /// Pending AppImage updates from the last check (JSON array)
+    #[serde(default)]
+    pub cached_appimage_json: String,
     /// Post an "Updates Available" notification (Install Now / Later)
     #[serde(default = "default_true")]
     pub notify_updates: bool,
@@ -152,6 +155,7 @@ impl Default for Config {
             cached_unpacked_size: String::new(),
             include_flatpak: true,
             cached_flatpak_json: String::new(),
+            cached_appimage_json: String::new(),
             notify_updates: true,
             snooze_until: 0,
             last_notified_signature: String::new(),

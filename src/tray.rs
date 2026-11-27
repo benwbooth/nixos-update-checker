@@ -38,7 +38,10 @@ pub mod qobject {
         // Flatpak updates (system + user installations), JSON array
         #[qproperty(QString, flatpak_updates_json)]
         #[qproperty(i32, flatpak_count)]
-        // NixOS packages + Flatpak refs
+        // AppImage updates from the flake's apps manifest (apps.json), JSON array
+        #[qproperty(QString, appimage_updates_json)]
+        #[qproperty(i32, appimage_count)]
+        // NixOS packages + Flatpak refs + AppImages
         #[qproperty(i32, total_count)]
         #[qproperty(bool, include_flatpak)]
         #[qproperty(bool, notify_updates)]
@@ -136,7 +139,8 @@ pub mod qobject {
 
         /// Build the full pkexec update command string from the current
         /// updates and settings. `selection` is JSON
-        /// {"system": bool, "flatpaks": [full refs]}; "" installs everything.
+        /// {"system": bool, "flatpaks": [full refs], "appimages": [ids]};
+        /// "" installs everything.
         #[qinvokable]
         fn build_update_command(self: &UpdateChecker, selection: QString) -> QString;
 
@@ -191,6 +195,37 @@ use crate::config::{Config, GenerationPruneMode, IntervalUnit};
 use crate::flake_checker::{self, FlakeUpdate, CheckResult};
 use crate::flatpak::{self, FlatpakUpdate};
 use crate::release;
+use nix_apps::Update as AppImageUpdate;
+
+fn appimages_from_json(json: &str) -> Vec<AppImageUpdate> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+fn appimages_to_json(updates: &[AppImageUpdate]) -> String {
+    serde_json::to_string(updates).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Newer releases of the AppImages in the flake's apps manifest. Never
+/// fails: no manifest or no network just means nothing to report.
+fn check_appimages(flake_path: &str) -> Vec<AppImageUpdate> {
+    let path = nix_apps::manifest_path(std::path::Path::new(flake_path));
+    if !path.is_file() {
+        return Vec::new();
+    }
+    match nix_apps::Manifest::load(&path) {
+        Ok(manifest) => {
+            let (updates, errors) = nix_apps::check(&manifest);
+            for (id, e) in errors {
+                eprintln!("AppImage {id}: {e}");
+            }
+            updates
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            Vec::new()
+        }
+    }
+}
 
 fn flatpaks_from_json(json: &str) -> Vec<FlatpakUpdate> {
     serde_json::from_str(json).unwrap_or_default()
@@ -201,15 +236,33 @@ fn flatpaks_to_json(updates: &[FlatpakUpdate]) -> String {
 }
 
 /// Identifies a set of pending updates, so a notification is posted once per set.
-fn update_signature(nix: &[FlakeUpdate], flatpaks: &[FlatpakUpdate]) -> String {
+fn update_signature(nix: &[FlakeUpdate], flatpaks: &[FlatpakUpdate], appimages: &[AppImageUpdate]) -> String {
     let mut parts: Vec<String> = nix.iter().map(|u| u.package_name.clone()).collect();
     parts.extend(flatpaks.iter().map(|f| format!("{}/{}@{}", f.app_id, f.branch, f.new_version)));
+    parts.extend(appimages.iter().map(|a| format!("appimage:{}@{}", a.id, a.new_version)));
     parts.sort();
     parts.join("\n")
 }
 
-/// "42 NixOS packages (1.1 GiB) and 5 Flatpak apps"
-fn describe_updates(nix_count: usize, download_size: &str, flatpaks: &[FlatpakUpdate]) -> String {
+/// The commit for flake.lock and apps.json: the flake update's message, and
+/// a line per AppImage.
+fn commit_message(nix: &[FlakeUpdate], system: bool, appimages: &[AppImageUpdate]) -> String {
+    let mut msg = match (system, appimages.len()) {
+        (false, 1) => format!("Update {} to {}", appimages[0].name, appimages[0].new_version),
+        (false, n) => format!("Update {n} AppImages"),
+        (true, _) => flake_checker::generate_commit_message(nix),
+    };
+    if !appimages.is_empty() && (system || appimages.len() > 1) {
+        msg.push_str("\n\nAppImages:\n");
+        for a in appimages {
+            msg.push_str(&format!("- {} {} → {}\n", a.name, a.old_version, a.new_version));
+        }
+    }
+    msg
+}
+
+/// "42 NixOS packages (1.1 GiB), 5 Flatpak updates and 1 AppImage update"
+fn describe_updates(nix_count: usize, download_size: &str, flatpaks: &[FlatpakUpdate], appimages: &[AppImageUpdate]) -> String {
     let mut parts = Vec::new();
     if nix_count > 0 {
         let size = if download_size.is_empty() { String::new() } else { format!(" ({download_size})") };
@@ -222,7 +275,18 @@ fn describe_updates(nix_count: usize, download_size: &str, flatpaks: &[FlatpakUp
         let n = flatpaks.len();
         parts.push(format!("{n} Flatpak {}", if n == 1 { "update" } else { "updates" }));
     }
-    parts.join(" and ")
+    if !appimages.is_empty() {
+        let n = appimages.len();
+        parts.push(format!("{n} AppImage {}", if n == 1 { "update" } else { "updates" }));
+    }
+    match parts.len() {
+        0 => String::new(),
+        1 => parts.remove(0),
+        _ => {
+            let last = parts.pop().unwrap();
+            format!("{} and {last}", parts.join(", "))
+        }
+    }
 }
 
 /// Unix time a Later choice snoozes the reminder until.
@@ -337,6 +401,8 @@ pub struct UpdateCheckerRust {
     build_info: QString,
     flatpak_updates_json: QString,
     flatpak_count: i32,
+    appimage_updates_json: QString,
+    appimage_count: i32,
     total_count: i32,
     include_flatpak: bool,
     notify_updates: bool,
@@ -463,11 +529,11 @@ fn format_relative_time(timestamp: i64) -> String {
 }
 
 /// Build tooltip text with last check time and update status
-fn build_tooltip(updates: &[FlakeUpdate], flatpaks: &[FlatpakUpdate], last_check_timestamp: i64, download_size: &str, unpacked_size: &str) -> String {
+fn build_tooltip(updates: &[FlakeUpdate], flatpaks: &[FlatpakUpdate], appimages: &[AppImageUpdate], last_check_timestamp: i64, download_size: &str, unpacked_size: &str) -> String {
     let last_checked = format_relative_time(last_check_timestamp);
 
     let mut lines = vec!["Software Update".to_string()];
-    if updates.is_empty() && flatpaks.is_empty() {
+    if updates.is_empty() && flatpaks.is_empty() && appimages.is_empty() {
         lines.push("Your system is up to date".to_string());
     }
     if !updates.is_empty() {
@@ -484,6 +550,18 @@ fn build_tooltip(updates: &[FlakeUpdate], flatpaks: &[FlatpakUpdate], last_check
             more
         ));
     }
+    if !appimages.is_empty() {
+        let shown: Vec<String> = appimages
+            .iter()
+            .map(|a| format!("  {} ({} → {})", a.name, a.old_version, a.new_version))
+            .collect();
+        lines.push(format!(
+            "{} AppImage {}:\n{}",
+            appimages.len(),
+            if appimages.len() == 1 { "update" } else { "updates" },
+            shown.join("\n")
+        ));
+    }
     lines.push(format!("Last checked: {last_checked}"));
     lines.join("\n")
 }
@@ -495,6 +573,7 @@ type BgCheckResult = (
     Result<CheckResult, flake_checker::FlakeCheckError>,
     Option<Vec<FlatpakUpdate>>,
     Option<String>,
+    Vec<AppImageUpdate>,
 );
 
 /// Global storage for background check result
@@ -533,16 +612,19 @@ impl qobject::UpdateChecker {
             let flatpak_thread = include_flatpak.then(|| std::thread::spawn(flatpak::check_updates));
             let release_path = std::path::PathBuf::from(&flake_path_clone);
             let release_thread = std::thread::spawn(move || release::newer_release(&release_path));
+            let appimage_path = flake_path_clone.clone();
+            let appimage_thread = std::thread::spawn(move || check_appimages(&appimage_path));
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(flake_checker::check_for_updates(
                 &std::path::PathBuf::from(&flake_path_clone),
             ));
             let flatpaks = flatpak_thread.and_then(|t| t.join().ok());
             let new_release = release_thread.join().ok().flatten();
+            let appimages = appimage_thread.join().unwrap_or_default();
 
             // Store result for main thread to pick up
             if let Ok(mut stored) = CHECK_RESULT.lock() {
-                *stored = Some((result, flatpaks, new_release));
+                *stored = Some((result, flatpaks, new_release, appimages));
             }
         });
     }
@@ -562,7 +644,7 @@ impl qobject::UpdateChecker {
             stored.take()
         };
 
-        if let Some((result, flatpaks, new_release)) = result {
+        if let Some((result, flatpaks, new_release, appimages)) = result {
             // Process the result
             let check_timestamp = chrono::Utc::now().timestamp();
 
@@ -571,6 +653,10 @@ impl qobject::UpdateChecker {
             let flatpak_json = flatpaks_to_json(&flatpaks);
             self.as_mut().set_flatpak_updates_json(QString::from(&flatpak_json));
             self.as_mut().set_flatpak_count(flatpaks.len() as i32);
+            let appimage_json = appimages_to_json(&appimages);
+            self.as_mut().set_appimage_updates_json(QString::from(&appimage_json));
+            self.as_mut().set_appimage_count(appimages.len() as i32);
+            let others_pending = !flatpaks.is_empty() || !appimages.is_empty();
             let new_release = new_release.unwrap_or_default();
             self.as_mut().set_new_release(QString::from(&new_release));
             let followed = release::followed_release(std::path::Path::new(&self.as_ref().flake_path().to_string()))
@@ -579,6 +665,7 @@ impl qobject::UpdateChecker {
             self.as_mut().set_followed_release(QString::from(&followed));
             if let Ok(mut config) = Config::load() {
                 config.cached_flatpak_json = flatpak_json;
+                config.cached_appimage_json = appimage_json;
                 if !new_release.is_empty() && config.release_notified != new_release && config.notify_updates {
                     config.release_notified = new_release.clone();
                     notify_new_release(&new_release, &followed);
@@ -593,10 +680,10 @@ impl qobject::UpdateChecker {
                     let has_updates = !updates.is_empty();
                     let count = updates.len() as i32;
                     let summary = QString::from(&flake_checker::format_updates_tooltip(updates, &check_result.download_size, &check_result.unpacked_size));
-                    let tooltip = QString::from(&build_tooltip(updates, &flatpaks, check_timestamp, &check_result.download_size, &check_result.unpacked_size));
+                    let tooltip = QString::from(&build_tooltip(updates, &flatpaks, &appimages, check_timestamp, &check_result.download_size, &check_result.unpacked_size));
                     let json = updates_to_json(updates);
 
-                    self.as_mut().set_has_updates(has_updates || !flatpaks.is_empty());
+                    self.as_mut().set_has_updates(has_updates || others_pending);
                     self.as_mut().set_update_count(count);
                     self.as_mut().set_update_summary(summary);
                     self.as_mut().set_tooltip_text(tooltip);
@@ -626,7 +713,7 @@ impl qobject::UpdateChecker {
                     ));
                     self.as_mut().set_tooltip_text(tooltip);
                     let nix_pending = *self.as_ref().update_count() > 0;
-                    self.as_mut().set_has_updates(nix_pending || !flatpaks.is_empty());
+                    self.as_mut().set_has_updates(nix_pending || others_pending);
 
                     // Still save timestamp
                     if let Ok(mut config) = Config::load() {
@@ -641,7 +728,7 @@ impl qobject::UpdateChecker {
                 &format_relative_time(check_timestamp)
             ));
 
-            let total = *self.as_ref().update_count() + *self.as_ref().flatpak_count();
+            let total = *self.as_ref().update_count() + *self.as_ref().flatpak_count() + *self.as_ref().appimage_count();
             self.as_mut().set_total_count(total);
             self.as_mut().set_checking(false);
             self.as_mut().check_status_changed();
@@ -713,14 +800,17 @@ impl qobject::UpdateChecker {
                 // Restore cached updates from last check
                 let updates = updates_from_json(&config.cached_updates_json);
                 let flatpaks = if config.include_flatpak { flatpaks_from_json(&config.cached_flatpak_json) } else { Vec::new() };
-                let has_updates = !updates.is_empty() || !flatpaks.is_empty();
+                let appimages = appimages_from_json(&config.cached_appimage_json);
+                let has_updates = !updates.is_empty() || !flatpaks.is_empty() || !appimages.is_empty();
                 let count = updates.len() as i32;
 
                 self.as_mut().set_include_flatpak(config.include_flatpak);
                 self.as_mut().set_notify_updates(config.notify_updates);
                 self.as_mut().set_flatpak_updates_json(QString::from(&flatpaks_to_json(&flatpaks)));
                 self.as_mut().set_flatpak_count(flatpaks.len() as i32);
-                self.as_mut().set_total_count(count + flatpaks.len() as i32);
+                self.as_mut().set_appimage_updates_json(QString::from(&appimages_to_json(&appimages)));
+                self.as_mut().set_appimage_count(appimages.len() as i32);
+                self.as_mut().set_total_count(count + flatpaks.len() as i32 + appimages.len() as i32);
                 self.as_mut().set_snooze_text(QString::from(&describe_snooze(config.snooze_until)));
                 self.as_mut().set_system_version(QString::from(&os_pretty_name()));
                 self.as_mut().set_new_release(QString::from(&config.new_release));
@@ -743,7 +833,7 @@ impl qobject::UpdateChecker {
                 self.as_mut().set_unpacked_size(QString::from(&config.cached_unpacked_size));
 
                 // Set initial tooltip with cached status
-                let tooltip = QString::from(&build_tooltip(&updates, &flatpaks, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size));
+                let tooltip = QString::from(&build_tooltip(&updates, &flatpaks, &appimages, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size));
                 self.as_mut().set_tooltip_text(tooltip);
 
                 self.as_mut().set_commit_and_push(config.commit_and_push);
@@ -837,6 +927,8 @@ impl qobject::UpdateChecker {
         self.as_mut().set_unpacked_size(QString::from(""));
         self.as_mut().set_flatpak_updates_json(QString::from("[]"));
         self.as_mut().set_flatpak_count(0);
+        self.as_mut().set_appimage_updates_json(QString::from("[]"));
+        self.as_mut().set_appimage_count(0);
         self.as_mut().set_total_count(0);
         self.as_mut().set_snooze_text(QString::from(""));
 
@@ -844,6 +936,7 @@ impl qobject::UpdateChecker {
         if let Ok(mut config) = Config::load() {
             config.cached_updates_json = "[]".to_string();
             config.cached_flatpak_json = "[]".to_string();
+            config.cached_appimage_json = "[]".to_string();
             config.snooze_until = 0;
             config.cached_download_size = String::new();
             config.cached_unpacked_size = String::new();
@@ -902,7 +995,8 @@ impl qobject::UpdateChecker {
                 if !*self.as_ref().update_running() {
                     let updates = updates_from_json(&config.cached_updates_json);
                     let flatpaks = if config.include_flatpak { flatpaks_from_json(&config.cached_flatpak_json) } else { Vec::new() };
-                    let tooltip = build_tooltip(&updates, &flatpaks, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size);
+                    let appimages = appimages_from_json(&config.cached_appimage_json);
+                    let tooltip = build_tooltip(&updates, &flatpaks, &appimages, config.last_check_timestamp, &config.cached_download_size, &config.cached_unpacked_size);
                     self.as_mut().set_tooltip_text(QString::from(&tooltip));
                 }
             }
@@ -971,15 +1065,15 @@ impl qobject::UpdateChecker {
     pub fn build_update_command(&self, selection: QString) -> QString {
         let flake = self.flake_path().to_string();
         let nix_updates = updates_from_json(&self.updates_json().to_string());
-        let msg = flake_checker::generate_commit_message(&nix_updates);
         let mut flatpaks = if *self.include_flatpak() {
             flatpaks_from_json(&self.flatpak_updates_json().to_string())
         } else {
             Vec::new()
         };
+        let mut appimages = appimages_from_json(&self.appimage_updates_json().to_string());
         // Only the parts with something to do. With nothing known (no check
         // yet), do the system, as before.
-        let mut update_system = !nix_updates.is_empty() || flatpaks.is_empty();
+        let mut update_system = !nix_updates.is_empty() || (flatpaks.is_empty() && appimages.is_empty());
         // The items picked in the list (everything when there's no selection,
         // e.g. Install Now in the notification).
         let selection = selection.to_string();
@@ -991,7 +1085,20 @@ impl qobject::UpdateChecker {
                 .map(|a| a.iter().filter_map(|r| r.as_str().map(str::to_string)).collect())
                 .unwrap_or_default();
             flatpaks.retain(|f| picked.contains(&f.full_ref));
+            let picked_appimages: Vec<String> = sel
+                .get("appimages")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|r| r.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            appimages.retain(|a| picked_appimages.contains(&a.id));
         }
+        let msg = commit_message(if update_system { &nix_updates } else { &[] }, update_system, &appimages);
+        let appimage_ids = appimages.iter().map(|a| a.id.clone()).collect::<Vec<_>>().join(" ");
+        // The update script runs this binary (as the flake's owner) to pin the
+        // new releases in apps.json: `nixos-update-checker apps update …`.
+        let apps_tool = std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let refs = |installation: &str| {
             flatpaks
                 .iter()
@@ -1011,7 +1118,7 @@ impl qobject::UpdateChecker {
         let ssh_auth_sock = current_ssh_auth_sock(uid);
 
         let cmd = format!(
-            "pkexec env FLAKE_PATH={} COMMIT_MSG={} SSH_AUTH_SOCK={} ORIGINAL_UID={} UPDATE_SYSTEM={} FLATPAK_SYSTEM={} FLATPAK_USER={} FLATPAK_SYSTEM_REFS={} FLATPAK_USER_REFS={} COMMIT_AND_PUSH={} RUN_GC={} PRUNE_GENERATIONS={} GENERATION_PRUNE_MODE={} GENERATION_PRUNE_VALUE={} {}",
+            "pkexec env FLAKE_PATH={} COMMIT_MSG={} SSH_AUTH_SOCK={} ORIGINAL_UID={} UPDATE_SYSTEM={} FLATPAK_SYSTEM={} FLATPAK_USER={} FLATPAK_SYSTEM_REFS={} FLATPAK_USER_REFS={} APPIMAGES={} APPS_TOOL={} COMMIT_AND_PUSH={} RUN_GC={} PRUNE_GENERATIONS={} GENERATION_PRUNE_MODE={} GENERATION_PRUNE_VALUE={} {}",
             shell_quote(&flake),
             shell_quote(&msg),
             shell_quote(&ssh_auth_sock),
@@ -1021,6 +1128,8 @@ impl qobject::UpdateChecker {
             flag(flatpak::has_user_updates(&flatpaks)),
             shell_quote(&refs("system")),
             shell_quote(&refs("user")),
+            shell_quote(&appimage_ids),
+            shell_quote(&apps_tool),
             flag(*self.commit_and_push()),
             flag(*self.run_gc_after_update()),
             flag(*self.prune_generations()),
@@ -1047,7 +1156,8 @@ impl qobject::UpdateChecker {
         }
         let nix = updates_from_json(&self.as_ref().updates_json().to_string());
         let flatpaks = flatpaks_from_json(&self.as_ref().flatpak_updates_json().to_string());
-        let signature = update_signature(&nix, &flatpaks);
+        let appimages = appimages_from_json(&self.as_ref().appimage_updates_json().to_string());
+        let signature = update_signature(&nix, &flatpaks, &appimages);
         let snooze_ran_out = config.snooze_until > 0;
         if !snooze_ran_out && signature == config.last_notified_signature {
             return;
@@ -1059,8 +1169,8 @@ impl qobject::UpdateChecker {
 
         let body = format!(
             "{} {} ready to install. Install now, or later?",
-            describe_updates(nix.len(), &self.as_ref().download_size().to_string(), &flatpaks),
-            if nix.len() + flatpaks.len() == 1 { "is" } else { "are" },
+            describe_updates(nix.len(), &self.as_ref().download_size().to_string(), &flatpaks, &appimages),
+            if nix.len() + flatpaks.len() + appimages.len() == 1 { "is" } else { "are" },
         );
         self.as_mut().set_notification_pending(true);
         if let Ok(mut answer) = NOTIFY_ANSWER.lock() {

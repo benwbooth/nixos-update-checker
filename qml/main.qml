@@ -547,6 +547,12 @@ ApplicationWindow {
             else if (line.indexOf("Updating Flatpak apps") >= 0) {
                 statusText = "Updating Flatpak apps…"
             }
+            else if (line.indexOf("Updating AppImages") >= 0) {
+                statusText = "Updating AppImages…"
+            }
+            else if (line.match(/: downloading [^ ]+…$/)) {
+                statusText = "Downloading " + line.replace(/\x1b\[[0-9;]*m/g, "").replace(/…$/, "") + "…"
+            }
             else if (line.indexOf("Updating flake inputs") >= 0) {
                 statusText = "Updating flake inputs…"
             }
@@ -1015,7 +1021,7 @@ ApplicationWindow {
 
     // --- the update table ---
     // Rows: the NixOS system (one item: a flake update can't be split), each
-    // Flatpak, and a newer NixOS release (information only: it takes an edit
+    // Flatpak, each AppImage in the flake's apps.json, and a newer NixOS release (information only: it takes an edit
     // to flake.nix). Keys are stable across checks so ticks survive them.
     readonly property var nixUpdates: {
         try { return checker.updates_json ? JSON.parse(checker.updates_json) : [] } catch (e) { return [] }
@@ -1023,6 +1029,9 @@ ApplicationWindow {
     readonly property var flatpakUpdates: {
         if (!checker.include_flatpak) return []
         try { return checker.flatpak_updates_json ? JSON.parse(checker.flatpak_updates_json) : [] } catch (e) { return [] }
+    }
+    readonly property var appimageUpdates: {
+        try { return checker.appimage_updates_json ? JSON.parse(checker.appimage_updates_json) : [] } catch (e) { return [] }
     }
     // "26.05" from "NixOS 26.05 (Yarara)".
     readonly property string systemRelease: (checker.system_version.match(/^NixOS ([^ ]+)/) || ["", ""])[1]
@@ -1038,6 +1047,11 @@ ApplicationWindow {
             r.push({ key: f.installation + ":" + f.full_ref, kind: "flatpak", selectable: true, data: f,
                      name: f.name + (f.installation === "user" ? " (yours)" : ""),
                      version: f.new_version || f.branch, size: f.download_size || "" })
+        }
+        for (var j = 0; j < appimageUpdates.length; j++) {
+            var a = appimageUpdates[j]
+            r.push({ key: "appimage:" + a.id, kind: "appimage", selectable: true, data: a,
+                     name: a.name, version: a.new_version, size: "" })
         }
         if (checker.new_release)
             r.push({ key: "release", kind: "release", selectable: false,
@@ -1069,11 +1083,12 @@ ApplicationWindow {
     }
     // What the ticks ask for, for build_update_command.
     function selectionJson() {
-        var sel = { system: false, flatpaks: [] }
+        var sel = { system: false, flatpaks: [], appimages: [] }
         for (var i = 0; i < rows.length; i++) {
             if (!isChecked(rows[i])) continue
             if (rows[i].kind === "nixos") sel.system = true
             else if (rows[i].kind === "flatpak") sel.flatpaks.push(rows[i].data.full_ref)
+            else if (rows[i].kind === "appimage") sel.appimages.push(rows[i].data.id)
         }
         return JSON.stringify(sel)
     }
@@ -1309,8 +1324,8 @@ ApplicationWindow {
                                     implicitHeight: 20
                                     radius: 5
                                     gradient: Gradient {
-                                        GradientStop { position: 0; color: rowArea.modelData.kind === "flatpak" ? "#5a9bff" : rowArea.modelData.kind === "release" ? "#ffb340" : (theme.dark ? "#3a4a6b" : "#dfe8f7") }
-                                        GradientStop { position: 1; color: rowArea.modelData.kind === "flatpak" ? "#2f6fdc" : rowArea.modelData.kind === "release" ? "#f08a00" : (theme.dark ? "#26324a" : "#c4d3ee") }
+                                        GradientStop { position: 0; color: rowArea.modelData.kind === "flatpak" ? "#5a9bff" : rowArea.modelData.kind === "appimage" ? "#4fd18b" : rowArea.modelData.kind === "release" ? "#ffb340" : (theme.dark ? "#3a4a6b" : "#dfe8f7") }
+                                        GradientStop { position: 1; color: rowArea.modelData.kind === "flatpak" ? "#2f6fdc" : rowArea.modelData.kind === "appimage" ? "#1f9e5a" : rowArea.modelData.kind === "release" ? "#f08a00" : (theme.dark ? "#26324a" : "#c4d3ee") }
                                     }
                                     border.color: Qt.rgba(1, 1, 1, 0.22)
                                     Image {
@@ -1323,7 +1338,7 @@ ApplicationWindow {
                                     Text_ {
                                         visible: rowArea.modelData.kind !== "nixos"
                                         anchors.centerIn: parent
-                                        text: rowArea.modelData.kind === "release" ? "!" : "▣"
+                                        text: rowArea.modelData.kind === "release" ? "!" : rowArea.modelData.kind === "appimage" ? "◆" : "▣"
                                         color: "#ffffff"
                                         font.pointSize: 8
                                         font.weight: Font.Bold
@@ -1463,7 +1478,8 @@ ApplicationWindow {
                                     elide: Text.ElideNone
                                     color: theme.fgDim
                                     text: "Updates come from the flake at " + checker.flake_path
-                                        + (checker.include_flatpak ? " and from Flatpak (your apps and system-wide ones)." : ".")
+                                        + (checker.include_flatpak ? ", from Flatpak (your apps and system-wide ones)" : "")
+                                        + ", and from the releases of the AppImages its apps.json lists."
                                         + " Checks run " + root.intervalText()
                                         + (checker.notify_updates ? ", and a notification asks before anything is installed." : ".")
                                 }
@@ -1546,6 +1562,45 @@ ApplicationWindow {
                                     color: theme.fgDim
                                     font.pointSize: theme.smallSize
                                     text: parent.f ? "Latest change: " + parent.f.subject + (parent.f.date ? " (" + parent.f.date.split(" ")[0] + ")" : "") : ""
+                                }
+                            }
+
+                            // An AppImage from apps.json
+                            ColumnLayout {
+                                visible: !!parent.row && parent.row.kind === "appimage"
+                                Layout.fillWidth: true
+                                spacing: 6
+                                readonly property var a: parent.row && parent.row.kind === "appimage" ? parent.row.data : null
+                                Text_ { text: parent.a ? parent.a.name : ""; font.weight: Font.DemiBold; font.pointSize: theme.fontSize + 1 }
+                                Text_ {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    elide: Text.ElideNone
+                                    color: theme.fgDim
+                                    text: "An AppImage listed in " + checker.flake_path + "/apps.json. Installing pins the new release there, rebuilds the system"
+                                        + (checker.commit_and_push ? ", then commits and pushes apps.json." : ".")
+                                }
+                                GridLayout {
+                                    columns: 2
+                                    columnSpacing: 14
+                                    rowSpacing: 4
+                                    Layout.topMargin: 4
+                                    readonly property var a: parent.a
+                                    Text_ { text: "Version"; color: theme.fgDim; font.pointSize: theme.smallSize }
+                                    Text_ {
+                                        font.family: theme.mono
+                                        font.pointSize: theme.smallSize
+                                        text: parent.a ? parent.a.old_version + " → " + parent.a.new_version : ""
+                                    }
+                                    Text_ { text: "Download"; color: theme.fgDim; font.pointSize: theme.smallSize }
+                                    Text_ {
+                                        Layout.fillWidth: true
+                                        font.family: theme.mono
+                                        font.pointSize: theme.smallSize - 0.5
+                                        color: theme.fgDim
+                                        elide: Text.ElideMiddle
+                                        text: parent.a ? parent.a.url : ""
+                                    }
                                 }
                             }
 

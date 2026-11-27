@@ -16,6 +16,9 @@ FAILED=0
 UPDATE_SYSTEM="${UPDATE_SYSTEM:-1}"
 FLATPAK_SYSTEM="${FLATPAK_SYSTEM:-0}"
 FLATPAK_USER="${FLATPAK_USER:-0}"
+# AppImages (ids in the flake's apps.json) to move to their newest release,
+# and the program that does it (the GUI's own binary: `… apps update IDs`).
+APPIMAGES="${APPIMAGES:-}"
 
 find_ssh_agent_socket() {
     if [ -n "$SSH_AUTH_SOCK" ] && [ -S "$SSH_AUTH_SOCK" ]; then
@@ -131,7 +134,43 @@ update_flatpaks() {
     fi
 }
 
-if [ "$UPDATE_SYSTEM" != "1" ]; then
+# Pins the newest releases of the picked AppImages in apps.json, as the
+# flake's owner (it edits their file and downloads into the store). The
+# rebuild that follows installs them.
+update_appimages() {
+    echo "${BOLD}${GREEN}━━━ Updating AppImages ━━━${NC}"
+    if [ -z "$APPS_TOOL" ] || [ ! -x "$APPS_TOOL" ]; then
+        echo "${RED}Can't update AppImages: the apps tool isn't there ($APPS_TOOL)${NC}"
+        FAILED=1
+    else
+        # shellcheck disable=SC2086
+        if ! as_owner env PATH="$PATH:/run/current-system/sw/bin" \
+                "$APPS_TOOL" apps --manifest "$FLAKE_PATH/apps.json" update $APPIMAGES; then
+            echo "${RED}Failed to update some AppImages${NC}"
+            FAILED=1
+        fi
+    fi
+    echo ""
+}
+
+rebuild_system() {
+    echo "${BOLD}${MAGENTA}━━━ Rebuilding NixOS ━━━${NC}"
+    if ! nixos-rebuild switch --flake .; then
+        echo "${RED}Failed to rebuild NixOS${NC}"
+        FAILED=1
+    fi
+    echo ""
+}
+
+if [ "$UPDATE_SYSTEM" != "1" ] && [ -n "$APPIMAGES" ]; then
+    # AppImages without the rest of the flake: pin them and rebuild, leaving
+    # the other inputs where they are.
+    echo "${YELLOW}Updating AppImages without updating the flake's inputs${NC}"
+    echo ""
+    update_appimages
+    rebuild_system
+    update_flatpaks
+elif [ "$UPDATE_SYSTEM" != "1" ]; then
     echo "${YELLOW}NixOS is up to date; updating Flatpak apps only${NC}"
     echo ""
     update_flatpaks
@@ -146,12 +185,10 @@ if ! as_owner env NIX_CONFIG='extra-experimental-features = nix-command flakes' 
 fi
 echo ""
 
-echo "${BOLD}${MAGENTA}━━━ Rebuilding NixOS ━━━${NC}"
-if ! nixos-rebuild switch --flake .; then
-    echo "${RED}Failed to rebuild NixOS${NC}"
-    FAILED=1
+if [ -n "$APPIMAGES" ]; then
+    update_appimages
 fi
-echo ""
+rebuild_system
 
 update_flatpaks
 fi
@@ -167,15 +204,23 @@ if [ "$COMMIT_AND_PUSH" = "1" ]; then
         echo "${YELLOW}No SSH agent socket found; git push may ask for a key passphrase${NC}"
     fi
 
-    # Commit only flake.lock: it is the one file this script changes (via
-    # `nix flake update`). A blanket `git add -A` sweeps up unrelated work in
-    # progress in the flake directory -- someone editing configuration.nix while
-    # an update runs -- and pushes it to the remote under this generic message.
-    # Committing the path explicitly also ignores anything already staged there.
-    if as_owner git diff --quiet HEAD -- flake.lock; then
-        echo "${YELLOW}No flake.lock changes to commit${NC}"
+    # Commit only flake.lock and apps.json: the files this script changes
+    # (`nix flake update`, and AppImage releases pinned in apps.json). A
+    # blanket `git add -A` sweeps up unrelated work in progress in the flake
+    # directory -- someone editing configuration.nix while an update runs --
+    # and pushes it to the remote under this generic message. Committing the
+    # paths explicitly also ignores anything already staged there.
+    CHANGED=""
+    for f in flake.lock apps.json; do
+        if [ -e "$f" ] && ! as_owner git diff --quiet HEAD -- "$f"; then
+            CHANGED="$CHANGED $f"
+        fi
+    done
+    if [ -z "$CHANGED" ]; then
+        echo "${YELLOW}No flake.lock or apps.json changes to commit${NC}"
     else
-        as_owner git commit -m "$COMMIT_MSG" -- flake.lock \
+        # shellcheck disable=SC2086
+        as_owner git commit -m "$COMMIT_MSG" -- $CHANGED \
             || echo "${YELLOW}Nothing to commit${NC}"
     fi
     echo ""

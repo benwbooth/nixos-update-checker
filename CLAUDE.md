@@ -71,3 +71,22 @@ The update's terminal (`src/terminal_widget.{h,cpp}`) is a QTermWidget kept
 off screen and painted into the QML scene, with input forwarded to it. Don't
 go back to a native child window (WindowContainer): on Wayland that is a
 subsurface mapped apart from the window's frames, and it flickers.
+
+## Apps manifest and AppImages
+
+`nix-apps/` is a workspace crate (library + `nix-apps` CLI) for the flake's
+`apps.json`: what the system installs from nixpkgs, Flatpak and as AppImages.
+`nix/apps.nix` (exported as `nixosModules.apps`) is the NixOS module that
+installs it; /etc/nixos imports it from a `flake = false` input. A store app
+is meant to share both.
+
+- AppImages are pinned by URL and hash and name a release source (GitHub,
+  GitLab, Electron feed, zsync, download page). Versioned URLs are why this
+  isn't flake inputs.
+- The checker lists newer releases next to Flatpaks; the update script runs
+  this binary as `nixos-update-checker apps update IDs` (as the flake's owner)
+  to pin them, then rebuilds and commits apps.json with flake.lock.
+- Never execute an AppImage to inspect it: binfmt sends even
+  `--appimage-offset` through appimage-run, which starts the app. `appimage.rs`
+  reads the ELF and the SquashFS (unsquashfs) instead.
+- apps.json must be tracked by git, or the flake doesn't see it.
