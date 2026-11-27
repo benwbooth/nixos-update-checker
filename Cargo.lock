@@ -544,6 +544,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix-apps"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nixos-update-checker"
 version = "0.1.0"
 dependencies = [
@@ -559,6 +568,7 @@ dependencies = [
  "directories",
  "iana-time-zone",
  "libc",
+ "nix-apps",
  "once_cell",
  "regex",
  "serde",
