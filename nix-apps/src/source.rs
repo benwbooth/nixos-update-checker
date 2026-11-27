@@ -247,7 +247,9 @@ pub fn prefetch(url: &str, name: &str, expected: Option<&str>) -> Result<String>
     let mut cmd = Command::new("nix");
     cmd.args(["--extra-experimental-features", "nix-command", "store", "prefetch-file", "--json", "--name", name]);
     if let Some(h) = expected {
-        cmd.args(["--expected-hash", h]);
+        // The check is done with the expected hash's own algorithm.
+        let algo = h.split_once('-').map(|(a, _)| a).unwrap_or("sha256");
+        cmd.args(["--hash-type", algo, "--expected-hash", h]);
     }
     cmd.arg(url);
     let out = cmd.output().map_err(|e| Error(format!("nix: {e}")))?;

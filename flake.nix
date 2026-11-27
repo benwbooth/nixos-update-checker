@@ -99,7 +99,8 @@
           git
           coreutils
           libnotify  # notify-send: the Updates Available notification
-          curl       # new major release check (channels.nixos.org)
+          curl       # new major release check (channels.nixos.org), AppImage releases
+          squashfsTools  # unsquashfs: reading a loose AppImage's update settings
         ];
 
         # Create a wrapped cargo that uses the qtEnv qmake
@@ -308,6 +309,11 @@
 
       }
     )) // {
+      # Installs what an apps manifest (apps.json) lists: nixpkgs packages,
+      # Flatpak apps and AppImages. Also usable without this flake's inputs:
+      # import nix/apps.nix from a `flake = false` input.
+      nixosModules.apps = import ./nix/apps.nix;
+
       # NixOS module for easy integration (outside eachDefaultSystem)
       nixosModules.default = { config, lib, pkgs, ... }:
         with lib;
