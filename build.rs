@@ -36,7 +36,9 @@ fn get_qt_include_path() -> String {
 }
 
 fn get_qt_version() -> Option<String> {
-    let output = std::process::Command::new("qmake")
+    // The package build has $QMAKE but no qmake on PATH.
+    let qmake = env::var("QMAKE").ok().filter(|q| !q.is_empty()).unwrap_or_else(|| "qmake".into());
+    let output = std::process::Command::new(qmake)
         .args(["-query", "QT_VERSION"])
         .output()
         .ok()?;
@@ -216,7 +218,7 @@ fn main() {
         .qml_module(QmlModule {
             uri: "NixosUpdateChecker",
             rust_files: &["src/tray.rs"],
-            qml_files: &["qml/main.qml", "qml/AppMenu.qml", "qml/MacComboBox.qml", "qml/MacComboItem.qml", "qml/MacComboPopup.qml", "qml/MacMenuBackground.qml", "qml/MacMenuIcon.qml", "qml/MacMenuItem.qml", "qml/MacMenu.qml", "qml/MacMenuButton.qml", "qml/MacMenuSeparator.qml", "qml/MacMenuStyle.qml", "qml/ChromeButtons.qml", "qml/ChromeResizeEdges.qml", "qml/ChromeTitleArea.qml"],
+            qml_files: &["qml/main.qml", "qml/AppMenu.qml", "qml/MacComboBox.qml", "qml/MacComboItem.qml", "qml/MacComboPopup.qml", "qml/MomentumScroll.qml", "qml/MacMenuBackground.qml", "qml/MacMenuIcon.qml", "qml/MacMenuItem.qml", "qml/MacMenu.qml", "qml/MacMenuButton.qml", "qml/MacMenuSeparator.qml", "qml/MacMenuStyle.qml", "qml/ChromeButtons.qml", "qml/ChromeResizeEdges.qml", "qml/ChromeTitleArea.qml"],
             ..Default::default()
         })
         .qrc("resources/resources.qrc")
