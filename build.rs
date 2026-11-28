@@ -36,7 +36,9 @@ fn get_qt_include_path() -> String {
 }
 
 fn get_qt_version() -> Option<String> {
-    let output = std::process::Command::new("qmake")
+    // The package build has $QMAKE but no qmake on PATH.
+    let qmake = env::var("QMAKE").ok().filter(|q| !q.is_empty()).unwrap_or_else(|| "qmake".into());
+    let output = std::process::Command::new(qmake)
         .args(["-query", "QT_VERSION"])
         .output()
         .ok()?;
