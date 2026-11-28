@@ -1367,6 +1367,8 @@ ApplicationWindow {
                             }
                         }
                     }
+                    // Touchpad scrolling coasts after the fingers lift.
+                    MomentumScroll { flickable: table; anchors.fill: table; enabled: table.enabled }
 
                     // Empty table
                     Column {
